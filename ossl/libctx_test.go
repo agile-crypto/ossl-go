@@ -18,21 +18,21 @@ func TestContextProviderIsolation(t *testing.T) {
 	}
 	defer b.Close()
 
-	if mdAvailableForTest(a, "MD4", "") {
+	if a.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 unexpectedly available in a fresh context before loading legacy")
 	}
 
-	if !loadProviderForTest(a, "legacy") {
-		t.Fatal("failed to load the legacy provider into context a")
+	if _, err := a.LoadProvider("legacy"); err != nil {
+		t.Fatalf("failed to load the legacy provider into context a: %v", err)
 	}
 
-	if !mdAvailableForTest(a, "MD4", "") {
+	if !a.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 not available in context a after loading legacy into it")
 	}
-	if mdAvailableForTest(b, "MD4", "") {
+	if b.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 available in context b, which never had legacy loaded - isolation broken")
 	}
-	if mdAvailableForTest(Default, "MD4", "") {
+	if Default.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 available via Default, which never had legacy loaded - isolation broken")
 	}
 }
@@ -47,13 +47,13 @@ func TestContextSetDefaultPropertiesFiltersFetches(t *testing.T) {
 	}
 	defer c.Close()
 
-	if !loadProviderForTest(c, "legacy") {
-		t.Fatal("failed to load legacy")
+	if _, err := c.LoadProvider("legacy"); err != nil {
+		t.Fatalf("failed to load legacy: %v", err)
 	}
-	if !loadProviderForTest(c, "default") {
-		t.Fatal("failed to load default")
+	if _, err := c.LoadProvider("default"); err != nil {
+		t.Fatalf("failed to load default: %v", err)
 	}
-	if !mdAvailableForTest(c, "MD4", "") {
+	if !c.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 should be available before pinning default properties")
 	}
 
@@ -61,13 +61,13 @@ func TestContextSetDefaultPropertiesFiltersFetches(t *testing.T) {
 		t.Fatalf("SetDefaultProperties: %v", err)
 	}
 
-	if mdAvailableForTest(c, "MD4", "") {
+	if c.DigestAvailable("MD4", "") {
 		t.Fatal("MD4 still available after pinning provider=default - legacy should no longer match by default")
 	}
-	if !mdAvailableForTest(c, "MD4", "provider=legacy") {
+	if !c.DigestAvailable("MD4", "provider=legacy") {
 		t.Fatal("MD4 not available with an explicit override query - explicit propq should win over the pinned default")
 	}
-	if !mdAvailableForTest(c, "SHA2-256", "") {
+	if !c.DigestAvailable("SHA2-256", "") {
 		t.Fatal("SHA2-256 should still be available: it matches provider=default")
 	}
 }
@@ -94,7 +94,7 @@ func TestDefaultCloseIsNoOp(t *testing.T) {
 	if Default.ptr() != nil {
 		t.Fatal("Default.ptr() is not nil after Close")
 	}
-	if !mdAvailableForTest(Default, "SHA2-256", "") {
+	if !Default.DigestAvailable("SHA2-256", "") {
 		t.Fatal("Default is unusable after Close - it never owned anything to free")
 	}
 }

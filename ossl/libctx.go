@@ -3,7 +3,6 @@ package ossl
 /*
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/provider.h>
 #include <stdlib.h>
 */
 import "C"
@@ -81,34 +80,4 @@ func (c *Context) ptr() *C.OSSL_LIB_CTX {
 		return nil
 	}
 	return c.ctx
-}
-
-// loadProviderForTest and mdAvailableForTest exist only so this file's own
-// tests can demonstrate context isolation -- loading a provider into one
-// context and observing that a fetch through a different context does not
-// see it -- without depending on provider.go or digest.go. Both land in
-// later commits and build the same two operations out into a real, exported
-// API (provider enumeration and metadata; digest streaming and one-shot
-// hashing), so these stay unexported and deliberately minimal.
-func loadProviderForTest(c *Context, name string) bool {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-	return C.OSSL_PROVIDER_load(c.ptr(), cname) != nil
-}
-
-func mdAvailableForTest(c *Context, name, propq string) bool {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-	var cq *C.char
-	if propq != "" {
-		cq = C.CString(propq)
-		defer C.free(unsafe.Pointer(cq))
-	}
-	md := C.EVP_MD_fetch(c.ptr(), cname, cq)
-	ok := md != nil
-	if md != nil {
-		C.EVP_MD_free(md)
-	}
-	clearErrors()
-	return ok
 }
