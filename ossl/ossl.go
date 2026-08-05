@@ -10,6 +10,7 @@ import "C"
 import (
 	"fmt"
 	"strings"
+	"unsafe"
 )
 
 // Version reports the libcrypto version actually linked at runtime.
@@ -56,4 +57,19 @@ func CheckVersion() error {
 				"(set LD_LIBRARY_PATH or link with -Wl,-rpath)", bt, rt)
 	}
 	return nil
+}
+
+// Zero overwrites b using OPENSSL_cleanse, which the C compiler is not
+// permitted to optimise away.
+//
+// Caveat, and it is a real one: this scrubs the bytes b currently points at.
+// It cannot scrub copies the Go runtime may have made -- a slice that has
+// been appended to and reallocated, or a small array that lived on a
+// goroutine stack that has since been copied to a larger one. Treat Zero as
+// best-effort hygiene, not as a guarantee.
+func Zero(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	C.OPENSSL_cleanse(unsafe.Pointer(&b[0]), C.size_t(len(b)))
 }
