@@ -141,6 +141,19 @@ func readOut(q unsafe.Pointer, n int) []byte {
 	return C.GoBytes(q, C.int(n))
 }
 
+// OctetsNilData adds an octet-string parameter with a NULL data pointer and
+// a declared size but no bytes to copy -- OpenSSL's convention (inherited
+// from the ctrl-based API this replaces) for "set the desired length, there
+// is nothing to supply yet", as distinct from a real value. CCM's tag-length
+// declaration at encrypt time needs exactly this shape; a zeroed N-byte
+// buffer from Octets is not equivalent and is silently ignored. No arena
+// allocation is needed here: NULL is not a Go pointer, so the cgo pointer
+// rule the rest of this file exists to satisfy does not apply to it.
+func (p *params) OctetsNilData(key string, n int) *params {
+	p.list = append(p.list, C.OSSL_PARAM_construct_octet_string(p.cstr(key), nil, C.size_t(n)))
+	return p
+}
+
 // c terminates the array and returns a pointer to its first element.
 //
 // The returned pointer is valid only until free. Callers keep the builder
@@ -183,6 +196,7 @@ const (
 	pKeyRSABits    = "bits"
 	pKeyGroupName  = "group"
 	pKeyAEADTag    = "tag"
+	pKeyAEADTagLen = "taglen"
 	pKeyIVLen      = "ivlen"
 	pKeyArgonLane  = "lanes"
 	pKeyArgonMem   = "memcost"

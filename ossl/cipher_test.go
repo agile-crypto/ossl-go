@@ -204,3 +204,169 @@ func TestAEADCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("SealErr after Close = %v, want ErrClosed", err)
 	}
 }
+
+// TestAEADCustomIVAndTagSize exercises WithIVSize/WithTagSize against GCM
+// with the exact non-default combinations citius-server's AesGcmParams
+// allows (iv_size_bits: 64/96/128, tag_size_bits: 96-128 in steps of 8),
+// proving the override actually changes NonceSize()/Overhead() and that a
+// round trip still authenticates correctly at each size.
+func TestAEADCustomIVAndTagSize(t *testing.T) {
+	key := bytes.Repeat([]byte{0xcc}, 32)
+
+	for _, tc := range []struct {
+		ivBytes, tagBytes int
+	}{
+		{ivBytes: 8, tagBytes: 16},  // 64-bit IV, default tag
+		{ivBytes: 12, tagBytes: 12}, // default IV, 96-bit (truncated) tag
+		{ivBytes: 16, tagBytes: 13}, // 128-bit IV, 104-bit tag
+	} {
+		aead, err := Default.NewAEAD("AES-256-GCM", key, WithIVSize(tc.ivBytes), WithTagSize(tc.tagBytes))
+		if err != nil {
+			t.Fatalf("NewAEAD(iv=%d, tag=%d): %v", tc.ivBytes, tc.tagBytes, err)
+		}
+
+		if aead.NonceSize() != tc.ivBytes {
+			t.Fatalf("NonceSize() = %d, want %d", aead.NonceSize(), tc.ivBytes)
+		}
+		if aead.Overhead() != tc.tagBytes {
+			t.Fatalf("Overhead() = %d, want %d", aead.Overhead(), tc.tagBytes)
+		}
+
+		nonce := bytes.Repeat([]byte{0xdd}, tc.ivBytes)
+		plaintext := []byte("configurable IV and tag size")
+		ct, err := aead.SealErr(nil, nonce, plaintext, []byte("aad"))
+		if err != nil {
+			t.Fatalf("SealErr(iv=%d, tag=%d): %v", tc.ivBytes, tc.tagBytes, err)
+		}
+		if len(ct) != len(plaintext)+tc.tagBytes {
+			t.Fatalf("ciphertext length = %d, want %d", len(ct), len(plaintext)+tc.tagBytes)
+		}
+
+		pt, err := aead.Open(nil, nonce, ct, []byte("aad"))
+		if err != nil {
+			t.Fatalf("Open(iv=%d, tag=%d): %v", tc.ivBytes, tc.tagBytes, err)
+		}
+		if !bytes.Equal(pt, plaintext) {
+			t.Fatalf("decrypted = %q, want %q", pt, plaintext)
+		}
+		aead.Close()
+	}
+}
+
+// TestAEADCCMRoundTrip exercises AES-CCM, which the default-only Seal/Open
+// path from before this test could not have supported: CCM requires the
+// plaintext length declared before AAD, and (unlike GCM) treats tag length
+// as a real parameter of the MAC computation, not mere truncation.
+func TestAEADCCMRoundTrip(t *testing.T) {
+	key := bytes.Repeat([]byte{0xee}, 32)
+	aead, err := Default.NewAEAD("AES-256-CCM", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aead.Close()
+
+	nonce := bytes.Repeat([]byte{0xff}, aead.NonceSize())
+	plaintext := []byte("CCM needs its length upfront")
+	aad := []byte("ccm-aad")
+
+	ct := aead.Seal(nil, nonce, plaintext, aad)
+	pt, err := aead.Open(nil, nonce, ct, aad)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !bytes.Equal(pt, plaintext) {
+		t.Fatalf("decrypted = %q, want %q", pt, plaintext)
+	}
+
+	// Tamper rejection must hold for CCM exactly as it does for GCM.
+	ct[0] ^= 0x01
+	if _, err := aead.Open(nil, nonce, ct, aad); err != ErrVerification {
+		t.Fatalf("Open with a flipped byte = %v, want ErrVerification", err)
+	}
+}
+
+// TestAEADCCMCustomNonceAndTagSize covers the exact range citius-server's
+// AesCcmParams declares (nonce_size_bits: 56-104 i.e. 7-13 bytes,
+// tag_size_bits: 32-128 in even steps i.e. 4-16 bytes), including the
+// boundary values.
+func TestAEADCCMCustomNonceAndTagSize(t *testing.T) {
+	key := bytes.Repeat([]byte{0x12}, 32)
+
+	for _, tc := range []struct{ nonceBytes, tagBytes int }{
+		{nonceBytes: 7, tagBytes: 4},   // minimum nonce, minimum tag
+		{nonceBytes: 13, tagBytes: 16}, // maximum nonce, maximum tag
+		{nonceBytes: 12, tagBytes: 8},  // a middle value
+	} {
+		aead, err := Default.NewAEAD("AES-256-CCM", key, WithIVSize(tc.nonceBytes), WithTagSize(tc.tagBytes))
+		if err != nil {
+			t.Fatalf("NewAEAD(nonce=%d, tag=%d): %v", tc.nonceBytes, tc.tagBytes, err)
+		}
+
+		nonce := bytes.Repeat([]byte{0x34}, tc.nonceBytes)
+		plaintext := []byte("CCM boundary parameters")
+		ct, err := aead.SealErr(nil, nonce, plaintext, nil)
+		if err != nil {
+			t.Fatalf("SealErr(nonce=%d, tag=%d): %v", tc.nonceBytes, tc.tagBytes, err)
+		}
+		if len(ct) != len(plaintext)+tc.tagBytes {
+			t.Fatalf("ciphertext length = %d, want %d", len(ct), len(plaintext)+tc.tagBytes)
+		}
+
+		pt, err := aead.Open(nil, nonce, ct, nil)
+		if err != nil {
+			t.Fatalf("Open(nonce=%d, tag=%d): %v", tc.nonceBytes, tc.tagBytes, err)
+		}
+		if !bytes.Equal(pt, plaintext) {
+			t.Fatalf("decrypted = %q, want %q", pt, plaintext)
+		}
+		aead.Close()
+	}
+}
+
+func TestAEADCCMEmptyPlaintext(t *testing.T) {
+	key := bytes.Repeat([]byte{0x56}, 32)
+	aead, err := Default.NewAEAD("AES-256-CCM", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aead.Close()
+
+	nonce := bytes.Repeat([]byte{0x78}, aead.NonceSize())
+	ct := aead.Seal(nil, nonce, nil, []byte("aad-only"))
+	if len(ct) != aead.Overhead() {
+		t.Fatalf("ciphertext of empty plaintext = %d bytes, want just the %d-byte tag", len(ct), aead.Overhead())
+	}
+	pt, err := aead.Open(nil, nonce, ct, []byte("aad-only"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(pt) != 0 {
+		t.Fatalf("decrypted %d bytes, want 0", len(pt))
+	}
+}
+
+// TestAEADCCMEmptyPlaintextRejectsTamperedAAD pins a real bug caught while
+// building CCM support: with an empty plaintext, skipping the data Update
+// call entirely (correct for GCM/OCB/ChaCha20-Poly1305, all confirmed by
+// TestAEADEmptyPlaintextAndAAD) left CCM's tag unfinalized, and a tampered
+// AAD was silently ACCEPTED at Final instead of being rejected. This is
+// exactly the failure mode 04_aead.c's "tampered: ACCEPTED (this would be a
+// bug)" check exists to catch, just for a case that only CCM can hit.
+func TestAEADCCMEmptyPlaintextRejectsTamperedAAD(t *testing.T) {
+	key := bytes.Repeat([]byte{0x9a}, 32)
+	aead, err := Default.NewAEAD("AES-256-CCM", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aead.Close()
+
+	nonce := bytes.Repeat([]byte{0xbc}, aead.NonceSize())
+	aad := []byte("aad-only-empty-pt")
+	ct := aead.Seal(nil, nonce, nil, aad)
+
+	tamperedAAD := append([]byte(nil), aad...)
+	tamperedAAD[0] ^= 0x01
+	if _, err := aead.Open(nil, nonce, ct, tamperedAAD); err != ErrVerification {
+		t.Fatalf("Open with tampered AAD and empty plaintext = %v, want ErrVerification", err)
+	}
+}
