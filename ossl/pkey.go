@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -140,4 +141,28 @@ func (k *Key) Close() error {
 		k.pkey = nil
 	}
 	return nil
+}
+
+// oneShotOnly reports whether the algorithm refuses streaming signature
+// updates and must go through the single-call EVP_DigestSign.
+func (k *Key) oneShotOnly() bool {
+	t := strings.ToUpper(k.Type())
+	return strings.HasPrefix(t, "ED") ||
+		strings.HasPrefix(t, "ML-DSA") ||
+		strings.HasPrefix(t, "SLH-DSA")
+}
+
+// defaultDigest picks a sensible hash for algorithms that need one, and the
+// empty string for algorithms that hash internally.
+//
+// This is the small piece of policy that lets callers write key.Sign(msg,
+// nil) and have it do the right thing whether the key is RSA or ML-DSA.
+func (k *Key) defaultDigest() string {
+	if k.oneShotOnly() {
+		return ""
+	}
+	if k.SecurityBits() >= 192 {
+		return "SHA2-384"
+	}
+	return "SHA2-256"
 }

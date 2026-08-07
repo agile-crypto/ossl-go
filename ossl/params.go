@@ -202,4 +202,7 @@ const (
 	pKeyArgonMem   = "memcost"
 	pKeyThreads    = "threads"
 	pKeyEarlyClean = "early_clean"
+	pKeyContext    = "context-string"
+	pKeyInstance   = "instance"
+	pKeyNonceType  = "nonce-type"
 )
