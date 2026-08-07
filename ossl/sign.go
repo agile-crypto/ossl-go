@@ -65,8 +65,8 @@ type SignOptions struct {
 	Context []byte
 
 	// Prehash selects the "ph" variant -- Ed25519ph or Ed448ph -- which signs
-	// a SHA-512/SHAKE256 prehash of msg rather than msg itself. Ignored by
-	// every other algorithm.
+	// a SHA-512/SHAKE256 prehash of msg rather than msg itself. Setting it
+	// for any other algorithm is an error.
 	Prehash bool
 
 	// Padding applies to RSA keys only. The zero value is RSAPSS.
@@ -81,7 +81,7 @@ type SignOptions struct {
 	PSSSaltLen PSSSaltLength
 
 	// Deterministic selects RFC 6979 deterministic nonce generation for
-	// ECDSA. Ignored by every other algorithm.
+	// ECDSA. Setting it for any other algorithm is an error.
 	Deterministic bool
 }
 
@@ -205,12 +205,73 @@ func applyDeterministicECDSA(pctx *C.EVP_PKEY_CTX) error {
 	return nil
 }
 
+// maxContextLength is the domain-separation context ceiling shared by every
+// algorithm here: RFC 8032 §5.2.6 for Ed448, FIPS 204 §3.2 for ML-DSA, and
+// FIPS 205 §9.2 for SLH-DSA all cap it at 255 bytes.
+const maxContextLength = 255
+
+// checkSignOptions rejects options the key's algorithm cannot honour.
+//
+// Silently dropping them is the dangerous alternative, and it is what this
+// package did before: a Context set on an RSA or EC key was discarded, so a
+// signature produced with what the caller believed was domain separation
+// verified fine under any other context, or none. The same applied to an RSA
+// padding choice on a non-RSA key. None of it produced an error, and a
+// sign-then-verify test passes either way, because both halves drop the
+// option identically.
+//
+// Every field is compared against its zero value, so "unset" and "explicitly
+// the default" are deliberately the same thing -- there is no way to ask for
+// PSS on an Ed25519 key by accident, only to leave the RSA fields alone.
+func checkSignOptions(keyType string, o *SignOptions) error {
+	rsa := keyType == "RSA" || keyType == "RSA-PSS"
+	ec := keyType == "EC"
+	ed25519 := keyType == "ED25519"
+	ed448 := keyType == "ED448"
+	pqc := strings.HasPrefix(keyType, "ML-DSA") || strings.HasPrefix(keyType, "SLH-DSA")
+
+	if o.Context != nil && !(ed25519 || ed448 || pqc) {
+		return fmt.Errorf("ossl: %s signatures have no domain-separation context; "+
+			"SignOptions.Context is only valid for Ed25519, Ed448, ML-DSA and SLH-DSA", keyType)
+	}
+	if len(o.Context) > maxContextLength {
+		return fmt.Errorf("ossl: signature context is %d bytes, the maximum is %d",
+			len(o.Context), maxContextLength)
+	}
+	if o.Prehash && !(ed25519 || ed448) {
+		return fmt.Errorf("ossl: %s has no prehash variant; "+
+			"SignOptions.Prehash is only valid for Ed25519 and Ed448", keyType)
+	}
+	if o.Padding != RSAPSS && !rsa {
+		return fmt.Errorf("ossl: SignOptions.Padding is only valid for RSA keys, got %s", keyType)
+	}
+	if o.PSSSaltLen != PSSSaltLengthHash && !rsa {
+		return fmt.Errorf("ossl: SignOptions.PSSSaltLen is only valid for RSA keys, got %s", keyType)
+	}
+	if o.PSSSaltLen < 0 && o.PSSSaltLen != PSSSaltLengthMax {
+		return fmt.Errorf("ossl: SignOptions.PSSSaltLen must be PSSSaltLengthHash, "+
+			"PSSSaltLengthMax, or a positive byte count, got %d", o.PSSSaltLen)
+	}
+	if o.Deterministic && !ec {
+		return fmt.Errorf("ossl: SignOptions.Deterministic (RFC 6979) is only valid for EC keys, got %s", keyType)
+	}
+	// An RSA-PSS key carries its scheme in the key itself and cannot sign
+	// PKCS#1 v1.5, so a request for it is a caller error rather than
+	// something to quietly ignore.
+	if keyType == "RSA-PSS" && o.Padding == RSAPKCS1v15 {
+		return fmt.Errorf("ossl: an RSA-PSS key cannot produce PKCS#1 v1.5 signatures; " +
+			"generate a plain \"RSA\" key for that")
+	}
+	return nil
+}
+
 // applySignOptions applies whichever of the options above are relevant to
-// keyType, and leaves the rest of SignOptions -- meant for other algorithm
-// families -- untouched.
+// keyType. Options that do not apply have already been rejected by
+// checkSignOptions, so anything reaching here is either used or genuinely
+// absent.
 func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType string, o *SignOptions) error {
 	switch {
-	case keyType == "RSA":
+	case keyType == "RSA", keyType == "RSA-PSS":
 		return applyRSA(pctx, o, o.Digest)
 	case keyType == "EC":
 		if o.Deterministic {
@@ -239,6 +300,9 @@ func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
 		return nil, ErrClosed
 	}
 	o := k.signOpts(opts)
+	if err := checkSignOptions(k.Type(), o); err != nil {
+		return nil, err
+	}
 	clearErrors()
 
 	mdctx := C.EVP_MD_CTX_new()
@@ -303,6 +367,9 @@ func (k *Key) Verify(msg, sig []byte, opts *SignOptions) error {
 		return ErrVerification
 	}
 	o := k.signOpts(opts)
+	if err := checkSignOptions(k.Type(), o); err != nil {
+		return err
+	}
 	clearErrors()
 
 	mdctx := C.EVP_MD_CTX_new()

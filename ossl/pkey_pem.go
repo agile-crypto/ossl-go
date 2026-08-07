@@ -175,7 +175,7 @@ func decodeKey(ctx *Context, in []byte, inType, structure, keytype string, selec
 	if C.OSSL_DECODER_from_data(dctx, (**C.uchar)(unsafe.Pointer(&p)), &n) != 1 {
 		return nil, newError("OSSL_DECODER_from_data(" + structure + ")")
 	}
-	return &Key{pkey: pkey}, nil
+	return &Key{pkey: pkey, ctx: ctx}, nil
 }
 
 // ParsePKCS8PrivateKey parses a DER-encoded PKCS#8 PrivateKeyInfo.
@@ -225,7 +225,7 @@ func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error)
 	if pkey == nil {
 		return nil, newError("EVP_PKEY_new_raw_private_key_ex(" + algorithm + ")")
 	}
-	return &Key{pkey: pkey}, nil
+	return &Key{pkey: pkey, ctx: c}, nil
 }
 
 // ParseRawPublicKey builds a key from algorithm-native public key bytes.
@@ -241,17 +241,31 @@ func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) 
 	if pkey == nil {
 		return nil, newError("EVP_PKEY_new_raw_public_key_ex(" + algorithm + ")")
 	}
-	return &Key{pkey: pkey}, nil
+	return &Key{pkey: pkey, ctx: c}, nil
 }
 
 // Public returns the public-only half of k, discarding any private material
-// in the returned Key. Implemented as an SPKI round trip through Default,
-// since that is the only representation every key type here can produce and
-// re-parse.
+// in the returned Key. Implemented as an SPKI round trip, since that is the
+// only representation every key type here can produce and re-parse.
+//
+// The round trip goes back through the Context k came from. Routing it
+// through the implicit global context instead would resolve the algorithm
+// against a different provider set than the one that produced the key, which
+// fails outright for a key whose algorithm only exists in an isolated
+// context -- a FIPS-only or PKCS#11 context being the cases that matter.
 func (k *Key) Public() (*Key, error) {
 	spki, err := k.MarshalSPKI()
 	if err != nil {
 		return nil, err
 	}
-	return Default.ParseSPKIPublicKey(spki)
+	return k.context().ParseSPKIPublicKey(spki)
+}
+
+// context is the Context this key belongs to, falling back to the global
+// default for a zero-value Key.
+func (k *Key) context() *Context {
+	if k.ctx == nil {
+		return Default
+	}
+	return k.ctx
 }

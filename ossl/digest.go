@@ -6,6 +6,7 @@ package ossl
 import "C"
 
 import (
+	"fmt"
 	"hash"
 	"runtime"
 	"unsafe"
@@ -17,8 +18,9 @@ import (
 //
 // Design note: hash.Hash has no error returns, but EVP calls do. Rather than
 // panic or invent a parallel API, failures are latched and reported by Err.
-// In practice EVP_DigestUpdate cannot fail once init has succeeded, so Err is
-// a safety net rather than something callers must check every call.
+// Write is effectively infallible once init has succeeded, but Sum is not --
+// it rejects an XOF outright -- so Err is a result to check after Sum, not
+// merely a safety net. The one-shot Digest does that for you.
 //
 // Not safe for concurrent use. Call Close when finished.
 type Hash struct {
@@ -27,6 +29,7 @@ type Hash struct {
 	name string
 	size int
 	bs   int
+	xof  bool
 	err  error
 }
 
@@ -60,8 +63,13 @@ func (c *Context) NewHash(name string) (*Hash, error) {
 		name: name,
 		size: int(C.EVP_MD_get_size(md)),
 		bs:   int(C.EVP_MD_get_block_size(md)),
+		xof:  C.EVP_MD_xof(md) != 0,
 	}, nil
 }
+
+// IsXOF reports whether this is an extendable-output function (SHAKE-128,
+// SHAKE-256), which must be finalised with SumXOF rather than Sum.
+func (h *Hash) IsXOF() bool { return h.xof }
 
 func (h *Hash) Write(p []byte) (int, error) {
 	if h.ctx == nil {
@@ -82,9 +90,22 @@ func (h *Hash) Write(p []byte) (int, error) {
 
 // Sum appends the digest to b without changing the hash state, as hash.Hash
 // requires. The state is preserved by finalising a copy of the context.
+//
+// hash.Hash gives Sum no error return, so a failure is latched and reported
+// by Err. Check it, or use the one-shot Digest, which checks for you: a
+// silently empty return from this method would otherwise compare equal to
+// every other empty return.
+//
+// An XOF (SHAKE-128, SHAKE-256) has no natural fixed-length digest and is
+// rejected here rather than finalised at some arbitrary default length. Use
+// SumXOF, which requires the caller to say how many bytes they want.
 func (h *Hash) Sum(b []byte) []byte {
 	if h.ctx == nil {
 		h.err = ErrClosed
+		return b
+	}
+	if h.xof {
+		h.err = fmt.Errorf("ossl: %s is an extendable-output function; use SumXOF(n), not Sum", h.name)
 		return b
 	}
 	tmp := C.EVP_MD_CTX_new()
@@ -160,6 +181,11 @@ func (h *Hash) Close() error {
 
 // Digest is the one-shot form against the global default context: fetch,
 // hash, free. Use Context.NewHash directly for an isolated context.
+//
+// Sum latches its errors rather than returning them, so they are collected
+// here explicitly. Returning a digest and a nil error without this check
+// would mean handing back an empty slice that compares equal to every other
+// failed digest.
 func Digest(name string, data []byte) ([]byte, error) {
 	h, err := Default.NewHash(name)
 	if err != nil {
@@ -169,7 +195,11 @@ func Digest(name string, data []byte) ([]byte, error) {
 	if _, err := h.Write(data); err != nil {
 		return nil, err
 	}
-	return h.Sum(nil), nil
+	sum := h.Sum(nil)
+	if err := h.Err(); err != nil {
+		return nil, err
+	}
+	return sum, nil
 }
 
 // DigestXOF is the one-shot form for SHAKE-128 / SHAKE-256 against the

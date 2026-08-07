@@ -10,8 +10,14 @@ import "C"
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
+
+// threadBudget serialises the read-then-raise of a library context's thread
+// budget. It is package-wide rather than per-Context because it guards an
+// operation that is cheap and rare; contention is not a concern.
+var threadBudget sync.Mutex
 
 // deriveKDF is the generic path: fetch a KDF by name through this context,
 // apply parameters, produce n bytes. Every named helper below is a thin
@@ -146,6 +152,12 @@ type Argon2idParams struct {
 // the budget raised has no correctness cost -- it is a ceiling, and every
 // other operation on the context just has more headroom than it strictly
 // needs.
+//
+// The read and the raise are held under threadBudget for the same reason:
+// separately they are a check-then-act, and two goroutines arriving together
+// can each observe the old budget and the smaller request can then overwrite
+// the larger one, dropping the ceiling below what the other call already
+// depends on.
 func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
 	if ap.Iterations == 0 {
 		ap.Iterations = 3
@@ -157,9 +169,16 @@ func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]b
 		ap.Lanes = 1
 	}
 
-	if ap.Lanes > 1 && uint64(C.OSSL_get_max_threads(c.ptr())) < uint64(ap.Lanes) {
-		if C.OSSL_set_max_threads(c.ptr(), C.uint64_t(ap.Lanes)) != 1 {
-			return nil, newError("OSSL_set_max_threads")
+	if ap.Lanes > 1 {
+		threadBudget.Lock()
+		raise := uint64(C.OSSL_get_max_threads(c.ptr())) < uint64(ap.Lanes)
+		var err error
+		if raise && C.OSSL_set_max_threads(c.ptr(), C.uint64_t(ap.Lanes)) != 1 {
+			err = newError("OSSL_set_max_threads")
+		}
+		threadBudget.Unlock()
+		if err != nil {
+			return nil, err
 		}
 	}
 

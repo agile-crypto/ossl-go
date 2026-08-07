@@ -48,8 +48,14 @@ func (c *Context) newMAC(algorithm string, key []byte, p *params) (*MAC, error) 
 		return nil, newError("EVP_MAC_CTX_new")
 	}
 
-	// Copy the key: EVP_MAC_init stores it, so it must not be a Go pointer
-	// that the caller may mutate or that the GC could move.
+	// Copy the key so Reset can re-init with it after the caller has moved
+	// on, and so a caller mutating their slice cannot change this MAC's key
+	// underneath it.
+	//
+	// The copy is still Go memory and is still passed to C as a Go pointer,
+	// which is permitted only because EVP_MAC_init copies the key into the
+	// context rather than retaining the pointer. Anything that did retain it
+	// would need C-owned memory instead, the way params does.
 	k := append([]byte(nil), key...)
 
 	mm := &MAC{mac: m, ctx: ctx, key: k, p: p}
@@ -180,6 +186,10 @@ func (m *MAC) Close() error {
 }
 
 // HMACSum is the one-shot form against the global default context.
+//
+// As in Digest, Sum's latched error is collected explicitly: an unchecked
+// Sum can return an empty tag, and an empty tag compares equal to every
+// other empty tag.
 func HMACSum(digest string, key, data []byte) ([]byte, error) {
 	m, err := Default.NewHMAC(digest, key)
 	if err != nil {
@@ -189,7 +199,11 @@ func HMACSum(digest string, key, data []byte) ([]byte, error) {
 	if _, err := m.Write(data); err != nil {
 		return nil, err
 	}
-	return m.Sum(nil), nil
+	sum := m.Sum(nil)
+	if err := m.Err(); err != nil {
+		return nil, err
+	}
+	return sum, nil
 }
 
 // EqualMAC compares two tags in constant time.

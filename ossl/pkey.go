@@ -18,8 +18,15 @@ import (
 // possible.
 //
 // Not safe for concurrent use across operations that mutate. Close when done.
+//
+// A Key remembers the Context it was created or parsed through, so
+// operations that need to fetch an algorithm again later -- Public, which
+// re-parses its own SPKI encoding -- resolve against the same provider set
+// and property query the key came from, rather than falling back to the
+// implicit global context.
 type Key struct {
 	pkey *C.EVP_PKEY
+	ctx  *Context
 }
 
 // KeyOption configures key generation.
@@ -94,7 +101,7 @@ func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error)
 	if C.EVP_PKEY_generate(ctx, &pkey) <= 0 {
 		return nil, newError("EVP_PKEY_generate(" + algorithm + ")")
 	}
-	return &Key{pkey: pkey}, nil
+	return &Key{pkey: pkey, ctx: c}, nil
 }
 
 // Type reports the key's algorithm name, e.g. "RSA", "EC", "ML-DSA-65".
@@ -145,9 +152,14 @@ func (k *Key) Close() error {
 
 // oneShotOnly reports whether the algorithm refuses streaming signature
 // updates and must go through the single-call EVP_DigestSign.
+//
+// The Ed cases are matched by full name rather than an "ED" prefix so that
+// an unrelated algorithm whose name merely starts with those two letters is
+// not swept in.
 func (k *Key) oneShotOnly() bool {
 	t := strings.ToUpper(k.Type())
-	return strings.HasPrefix(t, "ED") ||
+	return strings.HasPrefix(t, "ED25519") ||
+		strings.HasPrefix(t, "ED448") ||
 		strings.HasPrefix(t, "ML-DSA") ||
 		strings.HasPrefix(t, "SLH-DSA")
 }
@@ -157,6 +169,12 @@ func (k *Key) oneShotOnly() bool {
 //
 // This is the small piece of policy that lets callers write key.Sign(msg,
 // nil) and have it do the right thing whether the key is RSA or ML-DSA.
+//
+// Note that it scales with the key: a P-384 key defaults to SHA2-384 where a
+// P-256 key defaults to SHA2-256. An ECDSA signature does not record which
+// digest produced it, so a verifier that hardcodes one while the signer took
+// this default will fail to verify across key sizes. Pass SignOptions.Digest
+// explicitly wherever both sides are not built from this same policy.
 func (k *Key) defaultDigest() string {
 	if k.oneShotOnly() {
 		return ""

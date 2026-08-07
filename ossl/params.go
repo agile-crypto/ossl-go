@@ -49,6 +49,7 @@ type params struct {
 	list  []C.OSSL_PARAM
 	arena []unsafe.Pointer
 	ended bool
+	freed bool
 }
 
 func newParams() *params {
@@ -159,6 +160,14 @@ func (p *params) OctetsNilData(key string, n int) *params {
 // The returned pointer is valid only until free. Callers keep the builder
 // reachable across the C call, which "defer p.free()" already guarantees.
 func (p *params) c() *C.OSSL_PARAM {
+	// Every referent this array points at lives in the freed arena, so the
+	// array is not merely empty afterward -- it is dangling. Failing loudly
+	// beats the alternatives: an index-out-of-range panic from deep inside
+	// an unrelated call, or, once the array is repopulated, handing OpenSSL
+	// pointers into memory that has already been returned to the allocator.
+	if p.freed {
+		panic("ossl: params used after free")
+	}
 	if !p.ended {
 		p.list = append(p.list, C.OSSL_PARAM_construct_end())
 		p.ended = true
@@ -173,6 +182,7 @@ func (p *params) free() {
 	}
 	p.arena = nil
 	p.list = nil
+	p.freed = true
 	runtime.KeepAlive(p)
 }
 

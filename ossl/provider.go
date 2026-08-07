@@ -50,7 +50,10 @@ static int ossl_provider_info(OSSL_PROVIDER *prov, const char **name,
 */
 import "C"
 
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // Provider is a loaded OpenSSL provider: "default", "legacy", "fips", or a
 // third-party module such as a PKCS#11 provider. It supplies the actual
@@ -104,11 +107,19 @@ type ProviderInfo struct {
 }
 
 // Providers enumerates every provider currently loaded into this context.
+//
+// The collecting callback holds a fixed-capacity array, so a context with an
+// implausible number of providers is reported as an error rather than
+// silently returning a truncated list that a caller could mistake for the
+// whole set.
 func (c *Context) Providers() ([]ProviderInfo, error) {
 	clearErrors()
 	var list C.ossl_provider_list
 	if C.OSSL_PROVIDER_do_all(c.ptr(), (*[0]byte)(C.ossl_collect_provider), unsafe.Pointer(&list)) != 1 {
 		return nil, newError("OSSL_PROVIDER_do_all")
+	}
+	if int(list.count) >= C.MAX_PROVIDERS {
+		return nil, fmt.Errorf("ossl: more than %d providers loaded; enumeration would be truncated", C.MAX_PROVIDERS)
 	}
 
 	infos := make([]ProviderInfo, 0, int(list.count))

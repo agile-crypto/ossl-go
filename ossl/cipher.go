@@ -9,6 +9,7 @@ import (
 	"crypto/cipher"
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -22,14 +23,20 @@ import (
 // Switching to "ChaCha20-Poly1305" is a change of one string, which is the
 // practical shape of algorithm agility at this layer.
 //
-// IV and tag length default to the algorithm's own default (12 and 16 bytes
-// for GCM; 7 and 12 for CCM) and can be overridden with WithIVSize and
-// WithTagSize -- CCM in particular needs this, since NIST SP 800-38C defines
-// valid nonce lengths as 7-13 bytes and tag lengths as even values 4-16.
+// The IV length defaults to the algorithm's own (12 bytes for GCM, CCM and
+// ChaCha20-Poly1305) and the tag length defaults to 16 for every algorithm,
+// which is the maximum each of them supports. Both can be overridden with
+// WithIVSize and WithTagSize -- CCM in particular needs this, since NIST SP
+// 800-38C defines valid nonce lengths as 7-13 bytes and tag lengths as even
+// values 4-16.
 //
-// Safe for concurrent use: each operation builds its own EVP_CIPHER_CTX.
-// That costs an allocation per call.
+// Safe for concurrent Seal and Open: each operation builds its own
+// EVP_CIPHER_CTX, at the cost of an allocation per call. Close is serialised
+// against in-flight operations, so closing an AEAD another goroutine is
+// still using is safe -- that goroutine gets ErrClosed rather than a
+// use-after-free on the underlying EVP_CIPHER.
 type AEAD struct {
+	mu     sync.RWMutex
 	cipher *C.EVP_CIPHER
 	key    []byte
 	name   string
@@ -51,11 +58,11 @@ type aeadConfig struct {
 
 // WithIVSize overrides the nonce/IV length in bytes. Only some algorithms
 // accept a non-default length -- ChaCha20-Poly1305 has none, GCM allows a
-// wide range, CCM requires 7-13 bytes per NIST SP 800-38C. An unsupported
-// length is not rejected here: it surfaces the first time it is used
-// (Seal/Open), from EVP_EncryptInit_ex2/EVP_DecryptInit_ex2, because
-// validating it properly would mean doing a real Init call at construction
-// time for no benefit beyond failing slightly earlier.
+// wide range, CCM requires 7-13 bytes per NIST SP 800-38C.
+//
+// NewAEAD rejects a length outside the range the mode permits. A length that
+// is in range but that the specific algorithm still refuses surfaces at the
+// first Seal or Open, from EVP_EncryptInit_ex2/EVP_DecryptInit_ex2.
 func WithIVSize(n int) AEADOption {
 	return func(c *aeadConfig) { c.ivLen = n }
 }
@@ -65,6 +72,11 @@ func WithIVSize(n int) AEADOption {
 // of the MAC computation, not mere truncation; GCM and OCB compute a full
 // 16-byte tag regardless and accept a shorter declared length only as a
 // truncation, for protocols that expect one (e.g. 12 bytes instead of 16).
+//
+// Because truncation is pure strength reduction, NewAEAD holds those modes
+// to a 12-byte floor: a tag short enough to guess is not a failure any test
+// of this package's own round trip would surface, since encrypt and decrypt
+// agree on the weak parameter perfectly well.
 func WithTagSize(n int) AEADOption {
 	return func(c *aeadConfig) { c.tagLen = n }
 }
@@ -102,6 +114,10 @@ func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, e
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if err := validateAEADSizes(name, mode == C.EVP_CIPH_CCM_MODE, cfg); err != nil {
+		C.EVP_CIPHER_free(ci)
+		return nil, err
+	}
 
 	return &AEAD{
 		cipher: ci,
@@ -111,6 +127,40 @@ func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, e
 		tag:    cfg.tagLen,
 		ccm:    mode == C.EVP_CIPH_CCM_MODE,
 	}, nil
+}
+
+// validateAEADSizes rejects nonce and tag lengths that the standards do not
+// permit, at construction time rather than at first use.
+//
+// Without this, WithTagSize(1) produced a working AEAD with an 8-bit
+// authentication tag, and WithIVSize(0) reached a zero-length nonce slice
+// and panicked inside the init path instead of returning an error. Neither
+// is something a caller can be expected to catch by inspection: both round
+// trip cleanly against themselves, so a test that only checks Seal-then-Open
+// passes while the construction is worthless.
+//
+// CCM's range is wider than everything else's on purpose: SP 800-38C defines
+// tags down to 32 bits as valid parameters of the MAC, and citius-server's
+// AesCcmParams accepts exactly that range. GCM, OCB and ChaCha20-Poly1305
+// truncate a full 16-byte tag instead, where a short tag is pure strength
+// reduction, so the floor there is the 96 bits SP 800-38D calls for.
+func validateAEADSizes(name string, ccm bool, cfg aeadConfig) error {
+	if ccm {
+		if cfg.ivLen < 7 || cfg.ivLen > 13 {
+			return fmt.Errorf("ossl: %s nonce must be 7-13 bytes per NIST SP 800-38C, got %d", name, cfg.ivLen)
+		}
+		if cfg.tagLen < 4 || cfg.tagLen > 16 || cfg.tagLen%2 != 0 {
+			return fmt.Errorf("ossl: %s tag must be an even 4-16 bytes per NIST SP 800-38C, got %d", name, cfg.tagLen)
+		}
+		return nil
+	}
+	if cfg.ivLen < 1 {
+		return fmt.Errorf("ossl: %s nonce must be at least 1 byte, got %d", name, cfg.ivLen)
+	}
+	if cfg.tagLen < 12 || cfg.tagLen > 16 {
+		return fmt.Errorf("ossl: %s tag must be 12-16 bytes, got %d", name, cfg.tagLen)
+	}
+	return nil
 }
 
 func (a *AEAD) NonceSize() int { return a.nonce }
@@ -137,6 +187,8 @@ func (a *AEAD) Seal(dst, nonce, plaintext, aad []byte) []byte {
 // arbitrary forgery. A random 96-bit nonce is safe to roughly 2^32 messages
 // per key; a strictly increasing counter is safer.
 func (a *AEAD) SealErr(dst, nonce, plaintext, aad []byte) ([]byte, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if a.closed {
 		return nil, ErrClosed
 	}
@@ -278,6 +330,8 @@ func initEncrypt(ctx *C.EVP_CIPHER_CTX, a *AEAD, nonce []byte) error {
 // since distinguishing "which call noticed" from a remote party would leak
 // more than a decrypt failure should.
 func (a *AEAD) Open(dst, nonce, ciphertext, aad []byte) ([]byte, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if a.closed {
 		return nil, ErrClosed
 	}
@@ -395,8 +449,13 @@ func initDecrypt(ctx *C.EVP_CIPHER_CTX, a *AEAD, nonce, tag []byte) error {
 	return nil
 }
 
-// Close releases the cipher and cleanses the retained key.
+// Close releases the cipher and cleanses the retained key. Safe to call more
+// than once, and safe to call while other goroutines are in Seal or Open:
+// it waits for them to finish first, and any that start afterward get
+// ErrClosed.
 func (a *AEAD) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if !a.closed {
 		C.EVP_CIPHER_free(a.cipher)
 		a.cipher = nil
