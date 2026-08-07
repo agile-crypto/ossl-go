@@ -1,0 +1,518 @@
+package ossl
+
+import (
+	"bytes"
+	"encoding/hex"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestOAEPRoundTrip(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	msg := []byte("a symmetric key, which is all RSA should ever carry")
+	ct, err := k.Encrypt(msg, nil)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if bytes.Contains(ct, msg) {
+		t.Fatal("ciphertext contains the plaintext")
+	}
+	pt, err := k.Decrypt(ct, nil)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatalf("decrypted = %q, want %q", pt, msg)
+	}
+}
+
+// OAEP is randomised: encrypting the same plaintext twice must not produce
+// the same ciphertext, or the scheme leaks equality of plaintexts.
+func TestOAEPIsRandomised(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	msg := []byte("same plaintext")
+	a, err := k.Encrypt(msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := k.Encrypt(msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, b) {
+		t.Fatal("two encryptions of the same plaintext are identical")
+	}
+	for _, ct := range [][]byte{a, b} {
+		pt, err := k.Decrypt(ct, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(pt, msg) {
+			t.Fatal("round trip mismatch")
+		}
+	}
+}
+
+// Encryption needs only the public half, which is the whole point of the
+// operation.
+func TestOAEPEncryptWithPublicKeyOnly(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+	pub, err := k.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+
+	msg := []byte("to the holder of the private key")
+	ct, err := pub.Encrypt(msg, nil)
+	if err != nil {
+		t.Fatalf("Encrypt with public key: %v", err)
+	}
+	pt, err := k.Decrypt(ct, nil)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatal("round trip mismatch")
+	}
+
+	// The public half cannot decrypt, and the failure is the opaque one.
+	if _, err := pub.Decrypt(ct, nil); !errors.Is(err, ErrVerification) {
+		t.Fatalf("Decrypt with a public-only key = %v, want ErrVerification", err)
+	}
+}
+
+// The label is bound into the padding: the same ciphertext must decrypt only
+// under the identical label. This is what makes the label useful for domain
+// separation, so it is worth pinning rather than assuming.
+func TestOAEPLabelIsBinding(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	msg := []byte("labelled")
+	ct, err := k.Encrypt(msg, &OAEPOptions{Label: []byte("context-A")})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	pt, err := k.Decrypt(ct, &OAEPOptions{Label: []byte("context-A")})
+	if err != nil {
+		t.Fatalf("Decrypt with the matching label: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatal("round trip mismatch")
+	}
+
+	for _, wrong := range []*OAEPOptions{
+		{Label: []byte("context-B")},
+		{Label: []byte("context-AA")},
+		{Label: nil},
+		nil,
+	} {
+		if _, err := k.Decrypt(ct, wrong); !errors.Is(err, ErrVerification) {
+			t.Fatalf("Decrypt with a non-matching label = %v, want ErrVerification", err)
+		}
+	}
+
+	// And the reverse: a no-label ciphertext must not open under a label.
+	plain, err := k.Encrypt(msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Decrypt(plain, &OAEPOptions{Label: []byte("context-A")}); !errors.Is(err, ErrVerification) {
+		t.Fatal("an unlabelled ciphertext opened under a label")
+	}
+}
+
+// Repeated use with a label exercises the set0 ownership transfer many times
+// over; a mismatched free there would show up as corruption or a crash.
+func TestOAEPLabelRepeatedUse(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	opts := &OAEPOptions{Label: bytes.Repeat([]byte("L"), 64)}
+	msg := []byte("repeat")
+	for i := 0; i < 200; i++ {
+		ct, err := k.Encrypt(msg, opts)
+		if err != nil {
+			t.Fatalf("iteration %d: Encrypt: %v", i, err)
+		}
+		pt, err := k.Decrypt(ct, opts)
+		if err != nil {
+			t.Fatalf("iteration %d: Decrypt: %v", i, err)
+		}
+		if !bytes.Equal(pt, msg) {
+			t.Fatalf("iteration %d: round trip mismatch", i)
+		}
+	}
+}
+
+func TestOAEPDigestMustMatch(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	msg := []byte("digest bound")
+	ct, err := k.Encrypt(msg, &OAEPOptions{Hash: "SHA2-256"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Decrypt(ct, &OAEPOptions{Hash: "SHA2-512"}); !errors.Is(err, ErrVerification) {
+		t.Fatal("a SHA2-256 ciphertext decrypted under SHA2-512")
+	}
+
+	// A non-default digest still round trips when both sides agree.
+	ct512, err := k.Encrypt(msg, &OAEPOptions{Hash: "SHA2-512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := k.Decrypt(ct512, &OAEPOptions{Hash: "SHA2-512"})
+	if err != nil {
+		t.Fatalf("SHA2-512 round trip: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatal("round trip mismatch")
+	}
+}
+
+// MGF1Hash defaults to Hash rather than to some independent library default,
+// so an explicit MGF1Hash equal to Hash must be indistinguishable from
+// leaving it empty.
+func TestOAEPMGF1DefaultsToHash(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	msg := []byte("mgf1")
+	ct, err := k.Encrypt(msg, &OAEPOptions{Hash: "SHA2-256"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := k.Decrypt(ct, &OAEPOptions{Hash: "SHA2-256", MGF1Hash: "SHA2-256"})
+	if err != nil {
+		t.Fatalf("explicit MGF1Hash equal to Hash did not match the default: %v", err)
+	}
+	if !bytes.Equal(pt, msg) {
+		t.Fatal("round trip mismatch")
+	}
+
+	// A genuinely different MGF1 digest is a different scheme.
+	if _, err := k.Decrypt(ct, &OAEPOptions{Hash: "SHA2-256", MGF1Hash: "SHA2-512"}); !errors.Is(err, ErrVerification) {
+		t.Fatal("a ciphertext decrypted under a different MGF1 digest")
+	}
+}
+
+func TestOAEPMaxPlaintext(t *testing.T) {
+	k, err := Default.GenerateKey("RSA", WithRSABits(2048))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	// 256 - 2*32 - 2
+	n, err := k.MaxOAEPPlaintext(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 190 {
+		t.Fatalf("MaxOAEPPlaintext(SHA2-256) = %d, want 190", n)
+	}
+
+	// The bound is exact: at the limit it works, one byte over it does not.
+	if _, err := k.Encrypt(bytes.Repeat([]byte{1}, n), nil); err != nil {
+		t.Fatalf("Encrypt at the reported maximum: %v", err)
+	}
+	if _, err := k.Encrypt(bytes.Repeat([]byte{1}, n+1), nil); err == nil {
+		t.Fatal("Encrypt one byte over the reported maximum succeeded")
+	}
+
+	// And it tracks the digest.
+	n512, err := k.MaxOAEPPlaintext(&OAEPOptions{Hash: "SHA2-512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n512 != 256-2*64-2 {
+		t.Fatalf("MaxOAEPPlaintext(SHA2-512) = %d, want %d", n512, 256-2*64-2)
+	}
+	if _, err := k.Encrypt(bytes.Repeat([]byte{1}, n512), &OAEPOptions{Hash: "SHA2-512"}); err != nil {
+		t.Fatalf("Encrypt at the SHA2-512 maximum: %v", err)
+	}
+}
+
+func TestOAEPEmptyPlaintext(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	ct, err := k.Encrypt(nil, nil)
+	if err != nil {
+		t.Fatalf("Encrypt(nil): %v", err)
+	}
+	pt, err := k.Decrypt(ct, nil)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if len(pt) != 0 {
+		t.Fatalf("decrypted %d bytes, want 0", len(pt))
+	}
+}
+
+// Every decryption failure must be the same opaque error, so that a caller
+// forwarding it cannot turn this into a padding oracle.
+func TestOAEPDecryptFailuresAreIndistinguishable(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+	other, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+
+	ct, err := k.Encrypt([]byte("secret"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	corrupt := append([]byte(nil), ct...)
+	corrupt[0] ^= 0xFF
+	truncated := ct[:len(ct)-1]
+	garbage := bytes.Repeat([]byte{0xAB}, len(ct))
+
+	for name, bad := range map[string][]byte{
+		"corrupted":  corrupt,
+		"truncated":  truncated,
+		"garbage":    garbage,
+		"empty":      nil,
+		"wrong-size": {1, 2, 3},
+	} {
+		_, err := k.Decrypt(bad, nil)
+		if !errors.Is(err, ErrVerification) {
+			t.Errorf("%s: Decrypt = %v, want ErrVerification", name, err)
+			continue
+		}
+		if err.Error() != ErrVerification.Error() {
+			t.Errorf("%s: error carries extra detail: %q", name, err)
+		}
+	}
+
+	// A valid ciphertext under the wrong key must look identical too.
+	err = func() error { _, e := other.Decrypt(ct, nil); return e }()
+	if !errors.Is(err, ErrVerification) || err.Error() != ErrVerification.Error() {
+		t.Fatalf("wrong-key Decrypt = %v, want a bare ErrVerification", err)
+	}
+}
+
+func TestOAEPRejectsNonRSAKeys(t *testing.T) {
+	for _, tc := range []struct {
+		alg  string
+		opts []KeyOption
+	}{
+		{"EC", []KeyOption{WithGroup("P-256")}},
+		{"ED25519", nil},
+		{"ML-KEM-768", nil},
+	} {
+		k, err := Default.GenerateKey(tc.alg, tc.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := k.Encrypt([]byte("m"), nil); err == nil {
+			t.Errorf("%s: Encrypt succeeded on a non-RSA key", tc.alg)
+		}
+		if _, err := k.Decrypt([]byte("c"), nil); err == nil {
+			t.Errorf("%s: Decrypt succeeded on a non-RSA key", tc.alg)
+		}
+		if _, err := k.MaxOAEPPlaintext(nil); err == nil {
+			t.Errorf("%s: MaxOAEPPlaintext succeeded on a non-RSA key", tc.alg)
+		}
+		k.Close()
+	}
+}
+
+func TestOAEPClosedKey(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.Close()
+
+	if _, err := k.Encrypt([]byte("m"), nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Encrypt on a closed key = %v, want ErrClosed", err)
+	}
+	if _, err := k.Decrypt([]byte("c"), nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Decrypt on a closed key = %v, want ErrClosed", err)
+	}
+	if _, err := k.MaxOAEPPlaintext(nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("MaxOAEPPlaintext on a closed key = %v, want ErrClosed", err)
+	}
+}
+
+func TestOAEPUnknownDigest(t *testing.T) {
+	k, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+	if _, err := k.Encrypt([]byte("m"), &OAEPOptions{Hash: "NOT-A-DIGEST"}); err == nil {
+		t.Fatal("Encrypt with an unknown digest succeeded")
+	}
+}
+
+// opensslCLI locates the openssl binary matching the library this package is
+// linked against, so the interop tests below compare against an independent
+// implementation of the same spec rather than against this wrapper itself.
+func opensslCLI(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/opt/openssl3.5.2/bin/openssl", "openssl"} {
+		if path, err := exec.LookPath(p); err == nil {
+			out, err := exec.Command(path, "version").Output()
+			if err == nil && strings.HasPrefix(string(out), "OpenSSL 3.5") {
+				return path
+			}
+		}
+	}
+	t.Skip("no OpenSSL 3.5 command-line tool available for interop")
+	return ""
+}
+
+// TestOAEPInteropWithOpenSSLCLI is the test that self-consistency cannot
+// provide. Encrypting and decrypting with this package alone still passes if
+// the OAEP and MGF1 digests are wrong in the same way on both sides -- the
+// scheme is simply a different, private one, and every round trip succeeds.
+// What actually matters is that the bytes on the wire match what a
+// conforming peer produces, so these cross-check both directions against the
+// openssl tool, including the MGF1-follows-Hash default that a same-wrapper
+// round trip is blind to.
+func TestOAEPInteropWithOpenSSLCLI(t *testing.T) {
+	cli := opensslCLI(t)
+	dir := t.TempDir()
+
+	k, err := Default.GenerateKey("RSA", WithRSABits(2048))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	privPEM, err := k.MarshalPKCS8PEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPEM, err := k.MarshalSPKIPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privPath := filepath.Join(dir, "priv.pem")
+	pubPath := filepath.Join(dir, "pub.pem")
+	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubPath, pubPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msg := []byte("interop payload")
+
+	for _, tc := range []struct {
+		name     string
+		goHash   string
+		cliMD    string
+		label    []byte
+		labelHex string
+	}{
+		{name: "SHA2-256", goHash: "SHA2-256", cliMD: "sha256"},
+		{name: "SHA2-512", goHash: "SHA2-512", cliMD: "sha512"},
+		{name: "SHA2-384", goHash: "SHA2-384", cliMD: "sha384"},
+		{
+			name: "SHA2-256 with label", goHash: "SHA2-256", cliMD: "sha256",
+			label: []byte("context-A"), labelHex: hex.EncodeToString([]byte("context-A")),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &OAEPOptions{Hash: tc.goHash, Label: tc.label}
+
+			cliOpts := []string{
+				"-pkeyopt", "rsa_padding_mode:oaep",
+				"-pkeyopt", "rsa_oaep_md:" + tc.cliMD,
+				"-pkeyopt", "rsa_mgf1_md:" + tc.cliMD,
+			}
+			if tc.labelHex != "" {
+				cliOpts = append(cliOpts, "-pkeyopt", "rsa_oaep_label:"+tc.labelHex)
+			}
+
+			// Direction 1: this package encrypts, the CLI decrypts.
+			ct, err := k.Encrypt(msg, opts)
+			if err != nil {
+				t.Fatalf("Encrypt: %v", err)
+			}
+			ctPath := filepath.Join(dir, "ct-"+tc.cliMD+tc.labelHex+".bin")
+			if err := os.WriteFile(ctPath, ct, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"pkeyutl", "-decrypt", "-inkey", privPath, "-in", ctPath}, cliOpts...)
+			out, err := exec.Command(cli, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("openssl could not decrypt what this package produced: %v\n%s", err, out)
+			}
+			if !bytes.Equal(out, msg) {
+				t.Fatalf("openssl decrypted %q, want %q", out, msg)
+			}
+
+			// Direction 2: the CLI encrypts, this package decrypts.
+			ptPath := filepath.Join(dir, "pt.bin")
+			if err := os.WriteFile(ptPath, msg, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cliCTPath := filepath.Join(dir, "clict-"+tc.cliMD+tc.labelHex+".bin")
+			args = append([]string{
+				"pkeyutl", "-encrypt", "-pubin", "-inkey", pubPath,
+				"-in", ptPath, "-out", cliCTPath,
+			}, cliOpts...)
+			if out, err := exec.Command(cli, args...).CombinedOutput(); err != nil {
+				t.Fatalf("openssl encrypt failed: %v\n%s", err, out)
+			}
+			cliCT, err := os.ReadFile(cliCTPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pt, err := k.Decrypt(cliCT, opts)
+			if err != nil {
+				t.Fatalf("this package could not decrypt what openssl produced: %v", err)
+			}
+			if !bytes.Equal(pt, msg) {
+				t.Fatalf("decrypted %q, want %q", pt, msg)
+			}
+		})
+	}
+}
