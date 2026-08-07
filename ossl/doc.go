@@ -17,8 +17,8 @@
 // # Concurrency
 //
 // Types are not safe for concurrent use unless their documentation says
-// otherwise. AEAD is, including against a concurrent Close. Hash and MAC
-// accumulate state across calls and are not.
+// otherwise. AEAD is, including against a concurrent Close. Hash, MAC,
+// Signer and Verifier accumulate state across calls and are not.
 //
 // # Errors
 //
