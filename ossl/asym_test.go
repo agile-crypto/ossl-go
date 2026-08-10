@@ -516,3 +516,211 @@ func TestOAEPInteropWithOpenSSLCLI(t *testing.T) {
 		})
 	}
 }
+
+func TestKEMRoundTrip(t *testing.T) {
+	for _, alg := range []string{
+		"ML-KEM-512", "ML-KEM-768", "ML-KEM-1024",
+		"X25519MLKEM768", "X25519", "X448", "RSA",
+	} {
+		t.Run(alg, func(t *testing.T) {
+			k, err := Default.GenerateKey(alg)
+			if err != nil {
+				t.Skipf("%s unavailable: %v", alg, err)
+			}
+			defer k.Close()
+
+			ct, ss, err := k.Encapsulate()
+			if err != nil {
+				t.Fatalf("Encapsulate: %v", err)
+			}
+			if len(ct) == 0 || len(ss) == 0 {
+				t.Fatalf("Encapsulate returned ct=%d ss=%d", len(ct), len(ss))
+			}
+			ss2, err := k.Decapsulate(ct)
+			if err != nil {
+				t.Fatalf("Decapsulate: %v", err)
+			}
+			if !bytes.Equal(ss, ss2) {
+				t.Fatal("decapsulated secret differs from the encapsulated one")
+			}
+			t.Logf("%-16s ct=%d ss=%d", alg, len(ct), len(ss))
+		})
+	}
+}
+
+// Encapsulation needs only the public half.
+func TestKEMEncapsulateWithPublicKeyOnly(t *testing.T) {
+	k, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+	pub, err := k.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+
+	ct, ss, err := pub.Encapsulate()
+	if err != nil {
+		t.Fatalf("Encapsulate with public key: %v", err)
+	}
+	got, err := k.Decapsulate(ct)
+	if err != nil {
+		t.Fatalf("Decapsulate: %v", err)
+	}
+	if !bytes.Equal(ss, got) {
+		t.Fatal("secret mismatch")
+	}
+}
+
+// Two encapsulations under the same key must differ: the secret is fresh per
+// call, not a property of the key.
+func TestKEMEncapsulationIsFresh(t *testing.T) {
+	k, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	ct1, ss1, err := k.Encapsulate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct2, ss2, err := k.Encapsulate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(ct1, ct2) {
+		t.Fatal("two encapsulations produced identical ciphertexts")
+	}
+	if bytes.Equal(ss1, ss2) {
+		t.Fatal("two encapsulations produced identical secrets")
+	}
+}
+
+// This is the contract most likely to be misread, so it is pinned rather than
+// merely documented: a corrupted encapsulation decapsulates *successfully*
+// and yields a different secret. Callers who treat a nil error as proof of
+// authenticity are wrong, and this test exists so that the day OpenSSL starts
+// returning an error instead, somebody notices deliberately.
+func TestKEMImplicitRejection(t *testing.T) {
+	for _, alg := range []string{"ML-KEM-768", "X25519MLKEM768"} {
+		t.Run(alg, func(t *testing.T) {
+			k, err := Default.GenerateKey(alg)
+			if err != nil {
+				t.Skipf("%s unavailable: %v", alg, err)
+			}
+			defer k.Close()
+
+			ct, ss, err := k.Encapsulate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			corrupt := append([]byte(nil), ct...)
+			corrupt[0] ^= 0xFF
+
+			got, err := k.Decapsulate(corrupt)
+			if err != nil {
+				t.Fatalf("Decapsulate of a corrupted encapsulation returned an error (%v); "+
+					"the documented implicit-rejection contract no longer holds", err)
+			}
+			if len(got) != len(ss) {
+				t.Fatalf("rejection secret is %d bytes, the real one is %d", len(got), len(ss))
+			}
+			if bytes.Equal(got, ss) {
+				t.Fatal("a corrupted encapsulation produced the original secret")
+			}
+
+			// Implicit rejection is deterministic per key and ciphertext: the
+			// same corrupted input yields the same pseudorandom secret.
+			again, err := k.Decapsulate(corrupt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, again) {
+				t.Fatal("rejection secret is not stable for the same input")
+			}
+		})
+	}
+}
+
+// Two different keys must not agree on a secret for the same encapsulation.
+func TestKEMWrongKeyYieldsDifferentSecret(t *testing.T) {
+	a, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	ct, ss, err := a.Encapsulate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := b.Decapsulate(ct)
+	if err != nil {
+		t.Fatalf("Decapsulate under the wrong key errored: %v", err)
+	}
+	if bytes.Equal(got, ss) {
+		t.Fatal("a different key recovered the same secret")
+	}
+}
+
+// A wrong-length encapsulation is a structural error, distinct from implicit
+// rejection, and does surface as an error.
+func TestKEMRejectsMalformedCiphertext(t *testing.T) {
+	k, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+
+	ct, _, err := k.Encapsulate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]byte{nil, {}, ct[:len(ct)-1], append(append([]byte(nil), ct...), 0)} {
+		if _, err := k.Decapsulate(bad); err == nil {
+			t.Errorf("Decapsulate accepted a %d-byte encapsulation (expected %d)", len(bad), len(ct))
+		}
+	}
+}
+
+func TestKEMClosedKey(t *testing.T) {
+	k, err := Default.GenerateKey("ML-KEM-768")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, _, err := k.Encapsulate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.Close()
+
+	if _, _, err := k.Encapsulate(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Encapsulate on a closed key = %v, want ErrClosed", err)
+	}
+	if _, err := k.Decapsulate(ct); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Decapsulate on a closed key = %v, want ErrClosed", err)
+	}
+}
+
+// A signature-only key has no KEM at all and must say so rather than
+// producing something.
+func TestKEMRejectsSignatureOnlyKeys(t *testing.T) {
+	for _, alg := range []string{"ED25519", "ML-DSA-65"} {
+		k, err := Default.GenerateKey(alg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := k.Encapsulate(); err == nil {
+			t.Errorf("%s: Encapsulate succeeded on a signature-only key", alg)
+		}
+		k.Close()
+	}
+}

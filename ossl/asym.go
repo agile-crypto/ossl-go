@@ -11,6 +11,7 @@ import "C"
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -215,4 +216,132 @@ func (k *Key) MaxOAEPPlaintext(opts *OAEPOptions) (int, error) {
 		return 0, fmt.Errorf("ossl: %s is too small for OAEP with %s", k.Type(), hash)
 	}
 	return n, nil
+}
+
+// ---------------------------------------------------------------------------
+// Key encapsulation
+// ---------------------------------------------------------------------------
+
+// Encapsulate generates a fresh shared secret and its encapsulation under the
+// public part of k.
+//
+// Works for ML-KEM-512/768/1024, the IETF hybrids (X25519MLKEM768,
+// SecP256r1MLKEM768, X448MLKEM1024, SecP384r1MLKEM1024), X25519 and X448, and
+// RSA -- for which the RSASVE operation is selected automatically, since it
+// is the only KEM operation OpenSSL offers for RSA and making callers name it
+// serves nobody.
+//
+// The returned secret is NOT a key. For ML-KEM it is uniformly random, but
+// for RSASVE it is a raw integer the size of the modulus, and for the hybrids
+// it is a concatenation. Run it through a KDF bound to a protocol-specific
+// context string before using it for anything.
+func (k *Key) Encapsulate() (ciphertext, secret []byte, err error) {
+	if k.pkey == nil {
+		return nil, nil, ErrClosed
+	}
+	clearErrors()
+	ctx := C.EVP_PKEY_CTX_new_from_pkey(k.context().ptr(), k.pkey, nil)
+	if ctx == nil {
+		return nil, nil, newError("EVP_PKEY_CTX_new_from_pkey")
+	}
+	defer C.EVP_PKEY_CTX_free(ctx)
+
+	if C.EVP_PKEY_encapsulate_init(ctx, nil) <= 0 {
+		return nil, nil, newError("EVP_PKEY_encapsulate_init(" + k.Type() + ")")
+	}
+	if err := setKEMOp(ctx, k.Type()); err != nil {
+		return nil, nil, err
+	}
+
+	// Both output lengths come back from a single NULL/NULL query.
+	var ctLen, ssLen C.size_t
+	if C.EVP_PKEY_encapsulate(ctx, nil, &ctLen, nil, &ssLen) <= 0 {
+		return nil, nil, newError("EVP_PKEY_encapsulate(size)")
+	}
+	ct := make([]byte, int(ctLen))
+	ss := make([]byte, int(ssLen))
+	rc := C.EVP_PKEY_encapsulate(ctx,
+		(*C.uchar)(unsafe.Pointer(&ct[0])), &ctLen,
+		(*C.uchar)(unsafe.Pointer(&ss[0])), &ssLen)
+	runtime.KeepAlive(ct)
+	runtime.KeepAlive(ss)
+	if rc <= 0 {
+		return nil, nil, newError("EVP_PKEY_encapsulate")
+	}
+	return ct[:ctLen], ss[:ssLen], nil
+}
+
+// Decapsulate recovers the shared secret from an encapsulation.
+//
+// A nil error does NOT mean the ciphertext was genuine. ML-KEM's
+// Fujisaki-Okamoto transform uses implicit rejection: a corrupted
+// encapsulation yields a pseudorandom secret derived from a per-key rejection
+// value, and reports success. This was verified directly against every KEM
+// here -- flipping a byte of the ciphertext returns rc=1 with a secret that
+// simply differs from the sender's. There is no error for this wrapper to
+// surface and none it could invent without breaking the security property,
+// since revealing that decapsulation "failed" is precisely the oracle the
+// transform exists to deny.
+//
+// The mismatch is therefore only detectable one layer up, when a key derived
+// from the secret fails to authenticate something. Any protocol built on this
+// must have such a check -- an AEAD open, a MAC, a confirmation message --
+// or it will silently proceed with two different keys.
+func (k *Key) Decapsulate(ciphertext []byte) ([]byte, error) {
+	if k.pkey == nil {
+		return nil, ErrClosed
+	}
+	if len(ciphertext) == 0 {
+		return nil, fmt.Errorf("ossl: empty encapsulation")
+	}
+	clearErrors()
+	ctx := C.EVP_PKEY_CTX_new_from_pkey(k.context().ptr(), k.pkey, nil)
+	if ctx == nil {
+		return nil, newError("EVP_PKEY_CTX_new_from_pkey")
+	}
+	defer C.EVP_PKEY_CTX_free(ctx)
+
+	if C.EVP_PKEY_decapsulate_init(ctx, nil) <= 0 {
+		return nil, newError("EVP_PKEY_decapsulate_init(" + k.Type() + ")")
+	}
+	if err := setKEMOp(ctx, k.Type()); err != nil {
+		return nil, err
+	}
+
+	cp := (*C.uchar)(unsafe.Pointer(&ciphertext[0]))
+	var n C.size_t
+	if C.EVP_PKEY_decapsulate(ctx, nil, &n, cp, C.size_t(len(ciphertext))) <= 0 {
+		return nil, newError("EVP_PKEY_decapsulate(size)")
+	}
+	ss := make([]byte, int(n))
+	rc := C.EVP_PKEY_decapsulate(ctx, (*C.uchar)(unsafe.Pointer(&ss[0])), &n,
+		cp, C.size_t(len(ciphertext)))
+	runtime.KeepAlive(ciphertext)
+	runtime.KeepAlive(ss)
+	if rc <= 0 {
+		Zero(ss)
+		return nil, newError("EVP_PKEY_decapsulate")
+	}
+	return ss[:n], nil
+}
+
+// setKEMOp names the KEM operation for RSA. ML-KEM and the hybrids have
+// exactly one operation and do not take the parameter.
+//
+// RSA encapsulation works on this build without it -- RSASVE is evidently
+// already the default -- so this is explicitness rather than necessity. It
+// stays because the operation determines the wire format, and a default is a
+// worse thing to depend on than a name: if RSA ever gains a second KEM
+// operation, code that named the one it wanted keeps working and code that
+// relied on the default silently changes what it produces.
+func setKEMOp(ctx *C.EVP_PKEY_CTX, keyType string) error {
+	if !strings.EqualFold(keyType, "RSA") {
+		return nil
+	}
+	op := C.CString("RSASVE")
+	defer C.free(unsafe.Pointer(op))
+	if C.EVP_PKEY_CTX_set_kem_op(ctx, op) <= 0 {
+		return newError("EVP_PKEY_CTX_set_kem_op(RSASVE)")
+	}
+	return nil
 }
