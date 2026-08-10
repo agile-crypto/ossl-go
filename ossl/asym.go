@@ -3,6 +3,7 @@ package ossl
 /*
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
+#include <openssl/ec.h>
 #include <stdlib.h>
 #include <string.h>
 */
@@ -344,4 +345,114 @@ func setKEMOp(ctx *C.EVP_PKEY_CTX, keyType string) error {
 		return newError("EVP_PKEY_CTX_set_kem_op(RSASVE)")
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Key agreement
+// ---------------------------------------------------------------------------
+
+// DeriveOptions configures Diffie-Hellman key agreement. A nil
+// *DeriveOptions takes the algorithm's own defaults.
+type DeriveOptions struct {
+	// CofactorMode selects cofactor ECDH (ECCDH, PKCS#11's
+	// CKM_ECDH1_COFACTOR_DERIVE) instead of plain ECDH. EC keys only.
+	//
+	// It makes no difference on the NIST prime curves, whose cofactor is 1,
+	// and is there for curves where it is not: multiplying by the cofactor
+	// clears any small-subgroup component of a peer's point, which is the
+	// defence against small-subgroup attacks when a peer key is not fully
+	// validated.
+	CofactorMode bool
+}
+
+// Derive performs Diffie-Hellman key agreement against a peer's public key.
+// Works for EC, X25519, X448 and DH keys.
+//
+// The result is a group element, not a key. For P-256 it is an x-coordinate,
+// which is not uniformly distributed, and for X25519 it is a field element
+// with a similar problem. Run it through a KDF before use -- DeriveSharedKey
+// is the short path, ctx.HKDF gives a choice of digest, and ctx.DeriveKDF
+// reaches X963KDF for the ANSI X9.63 profile.
+//
+// There is no post-quantum equivalent of this operation. ML-KEM replaces
+// Diffie-Hellman with encapsulation, and the two have different shapes -- one
+// round trip versus two -- so migrating a DH-based protocol is a protocol
+// change rather than an algorithm swap. That asymmetry is why the hybrid KEMs
+// exist.
+func (k *Key) Derive(peer *Key, opts *DeriveOptions) ([]byte, error) {
+	if k.pkey == nil {
+		return nil, ErrClosed
+	}
+	if peer == nil || peer.pkey == nil {
+		return nil, ErrClosed
+	}
+	// This check is not politeness. EVP_PKEY_derive_set_peer handles a
+	// same-algorithm mismatch gracefully -- a P-256 key against a P-384 peer
+	// just returns an error -- but a peer from a different keymgmt entirely
+	// trips an internal assertion and calls abort():
+	//
+	//	crypto/evp/keymgmt_lib.c:149: OpenSSL internal error:
+	//	Assertion failed: match_type(pk->keymgmt, keymgmt)
+	//
+	// That is a process-wide SIGABRT, which no Go recover can catch, reached
+	// by handing an EC key an X25519 peer. Anywhere a peer key's algorithm
+	// comes from the network, that is a remote kill switch, so the type
+	// equality is established here before OpenSSL ever sees the pair.
+	if kt, pt := k.Type(), peer.Type(); kt != pt {
+		return nil, fmt.Errorf("ossl: cannot derive between a %s key and a %s peer", kt, pt)
+	}
+	if opts != nil && opts.CofactorMode && k.Type() != "EC" {
+		return nil, fmt.Errorf("ossl: DeriveOptions.CofactorMode is only valid for EC keys, got %s", k.Type())
+	}
+	clearErrors()
+	ctx := C.EVP_PKEY_CTX_new_from_pkey(k.context().ptr(), k.pkey, nil)
+	if ctx == nil {
+		return nil, newError("EVP_PKEY_CTX_new_from_pkey")
+	}
+	defer C.EVP_PKEY_CTX_free(ctx)
+
+	if C.EVP_PKEY_derive_init(ctx) <= 0 {
+		return nil, newError("EVP_PKEY_derive_init")
+	}
+	if opts != nil && opts.CofactorMode {
+		if C.EVP_PKEY_CTX_set_ecdh_cofactor_mode(ctx, 1) <= 0 {
+			return nil, newError("EVP_PKEY_CTX_set_ecdh_cofactor_mode")
+		}
+	}
+	// set_peer also validates the peer key, which is the check that rejects a
+	// point on the wrong curve. Never skip it.
+	if C.EVP_PKEY_derive_set_peer(ctx, peer.pkey) <= 0 {
+		return nil, newError("EVP_PKEY_derive_set_peer")
+	}
+
+	var n C.size_t
+	if C.EVP_PKEY_derive(ctx, nil, &n) <= 0 {
+		return nil, newError("EVP_PKEY_derive(size)")
+	}
+	out := make([]byte, int(n))
+	rc := C.EVP_PKEY_derive(ctx, (*C.uchar)(unsafe.Pointer(&out[0])), &n)
+	runtime.KeepAlive(out)
+	if rc <= 0 {
+		Zero(out)
+		return nil, newError("EVP_PKEY_derive")
+	}
+	return out[:n], nil
+}
+
+// DeriveSharedKey turns a raw agreement or KEM secret into usable key
+// material, bound to a context string.
+//
+// It exists so that no caller of Encapsulate or Derive has to remember that
+// the raw output must not be used as a key directly. The context string is
+// the domain separator: derive an encryption key and a MAC key from one
+// secret by varying it, and never reuse one context for two purposes.
+//
+// This fixes HKDF-SHA2-256, which covers the common case. For another digest
+// call Context.HKDF directly, and for the ANSI X9.63 profile some protocols
+// require, Context.DeriveKDF("X963KDF", ...).
+func DeriveSharedKey(secret []byte, context string, n int) ([]byte, error) {
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("ossl: empty shared secret")
+	}
+	return Default.HKDF("SHA2-256", secret, nil, []byte(context), n)
 }

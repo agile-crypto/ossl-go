@@ -724,3 +724,353 @@ func TestKEMRejectsSignatureOnlyKeys(t *testing.T) {
 		k.Close()
 	}
 }
+
+// The defining property of key agreement: two parties independently reach
+// the same secret from their own private key and the other's public key.
+func TestDeriveAgreement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		alg  string
+		opts []KeyOption
+	}{
+		{"EC-P-256", "EC", []KeyOption{WithGroup("P-256")}},
+		{"EC-P-384", "EC", []KeyOption{WithGroup("P-384")}},
+		{"EC-P-521", "EC", []KeyOption{WithGroup("P-521")}},
+		{"X25519", "X25519", nil},
+		{"X448", "X448", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			alice, err := Default.GenerateKey(tc.alg, tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer alice.Close()
+			bob, err := Default.GenerateKey(tc.alg, tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bob.Close()
+
+			alicePub, err := alice.Public()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer alicePub.Close()
+			bobPub, err := bob.Public()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer bobPub.Close()
+
+			ab, err := alice.Derive(bobPub, nil)
+			if err != nil {
+				t.Fatalf("alice.Derive: %v", err)
+			}
+			ba, err := bob.Derive(alicePub, nil)
+			if err != nil {
+				t.Fatalf("bob.Derive: %v", err)
+			}
+			if !bytes.Equal(ab, ba) {
+				t.Fatal("the two parties did not agree on the same secret")
+			}
+			if len(ab) == 0 {
+				t.Fatal("empty shared secret")
+			}
+		})
+	}
+}
+
+// A third party's key must not reach the same secret.
+func TestDeriveDiffersPerPeer(t *testing.T) {
+	alice, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.Close()
+	bob, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bob.Close()
+	eve, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eve.Close()
+
+	bobPub, _ := bob.Public()
+	defer bobPub.Close()
+	evePub, _ := eve.Public()
+	defer evePub.Close()
+
+	withBob, err := alice.Derive(bobPub, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEve, err := alice.Derive(evePub, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(withBob, withEve) {
+		t.Fatal("agreement with two different peers produced the same secret")
+	}
+}
+
+// A peer on a different curve, or of a different algorithm entirely, must be
+// rejected rather than silently producing something.
+func TestDeriveRejectsMismatchedPeers(t *testing.T) {
+	p256, err := Default.GenerateKey("EC", WithGroup("P-256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p256.Close()
+	p384, err := Default.GenerateKey("EC", WithGroup("P-384"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p384.Close()
+	x25519, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x25519.Close()
+	rsa, err := Default.GenerateKey("RSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rsa.Close()
+
+	if _, err := p256.Derive(p384, nil); err == nil {
+		t.Error("derived across mismatched curves")
+	}
+	if _, err := p256.Derive(x25519, nil); err == nil {
+		t.Error("derived between EC and X25519")
+	}
+	if _, err := x25519.Derive(p256, nil); err == nil {
+		t.Error("derived between X25519 and EC")
+	}
+	if _, err := p256.Derive(rsa, nil); err == nil {
+		t.Error("derived against an RSA peer")
+	}
+	if _, err := p256.Derive(nil, nil); err == nil {
+		t.Error("derived against a nil peer")
+	}
+}
+
+// Cofactor mode is a real ECDH parameter that citius-server's EcdhParams
+// exposes; it must reach OpenSSL and be refused where it has no meaning.
+func TestDeriveCofactorMode(t *testing.T) {
+	alice, err := Default.GenerateKey("EC", WithGroup("P-256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.Close()
+	bob, err := Default.GenerateKey("EC", WithGroup("P-256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bob.Close()
+	bobPub, _ := bob.Public()
+	defer bobPub.Close()
+	alicePub, _ := alice.Public()
+	defer alicePub.Close()
+
+	opts := &DeriveOptions{CofactorMode: true}
+	ab, err := alice.Derive(bobPub, opts)
+	if err != nil {
+		t.Fatalf("Derive with cofactor mode: %v", err)
+	}
+	ba, err := bob.Derive(alicePub, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ab, ba) {
+		t.Fatal("cofactor-mode agreement disagreed")
+	}
+	// P-256 has cofactor 1, so the result must match the plain mode.
+	plain, err := alice.Derive(bobPub, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ab, plain) {
+		t.Fatal("cofactor mode changed the result on a cofactor-1 curve")
+	}
+
+	// Montgomery curves have no such knob.
+	x, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	xPub, _ := x.Public()
+	defer xPub.Close()
+	if _, err := x.Derive(xPub, opts); err == nil {
+		t.Fatal("CofactorMode accepted on an X25519 key")
+	}
+}
+
+func TestDeriveClosedKey(t *testing.T) {
+	a, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Default.GenerateKey("X25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	bPub, _ := b.Public()
+	defer bPub.Close()
+	a.Close()
+
+	if _, err := a.Derive(bPub, nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Derive on a closed key = %v, want ErrClosed", err)
+	}
+}
+
+func TestDeriveSharedKey(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x42}, 32)
+
+	k1, err := DeriveSharedKey(secret, "session-v1", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(k1) != 32 {
+		t.Fatalf("got %d bytes, want 32", len(k1))
+	}
+	if bytes.Equal(k1, secret) {
+		t.Fatal("DeriveSharedKey returned the raw secret")
+	}
+
+	// The context string is a domain separator: it must change the output.
+	k2, err := DeriveSharedKey(secret, "session-v2", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(k1, k2) {
+		t.Fatal("two different context strings produced the same key")
+	}
+
+	// Deterministic for the same inputs.
+	again, err := DeriveSharedKey(secret, "session-v1", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(k1, again) {
+		t.Fatal("DeriveSharedKey is not deterministic")
+	}
+
+	if _, err := DeriveSharedKey(nil, "ctx", 32); err == nil {
+		t.Fatal("DeriveSharedKey accepted an empty secret")
+	}
+}
+
+// As with OAEP, a round trip through this package alone cannot show that the
+// bytes match what a conforming peer computes: both sides would share any
+// mistake. This derives against the openssl tool in both roles.
+func TestDeriveInteropWithOpenSSLCLI(t *testing.T) {
+	cli := opensslCLI(t)
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		alg  string
+		opts []KeyOption
+	}{
+		{"EC-P-256", "EC", []KeyOption{WithGroup("P-256")}},
+		{"EC-P-384", "EC", []KeyOption{WithGroup("P-384")}},
+		{"X25519", "X25519", nil},
+		{"X448", "X448", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ours, err := Default.GenerateKey(tc.alg, tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ours.Close()
+			theirs, err := Default.GenerateKey(tc.alg, tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer theirs.Close()
+
+			oursPriv, err := ours.MarshalPKCS8PEM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			theirsPriv, err := theirs.MarshalPKCS8PEM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			oursPubKey, err := ours.Public()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer oursPubKey.Close()
+			oursPub, err := oursPubKey.MarshalSPKIPEM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			theirsPubKey, err := theirs.Public()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer theirsPubKey.Close()
+			theirsPub, err := theirsPubKey.MarshalSPKIPEM()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			write := func(base string, b []byte) string {
+				p := filepath.Join(dir, tc.name+"-"+base)
+				if err := os.WriteFile(p, b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}
+			oursPrivPath := write("ours.key", oursPriv)
+			theirsPrivPath := write("theirs.key", theirsPriv)
+			oursPubPath := write("ours.pub", oursPub)
+			theirsPubPath := write("theirs.pub", theirsPub)
+
+			// This package derives; the CLI derives the mirror image.
+			mine, err := ours.Derive(theirsPubKey, nil)
+			if err != nil {
+				t.Fatalf("Derive: %v", err)
+			}
+
+			outPath := filepath.Join(dir, tc.name+"-cli.bin")
+			out, err := exec.Command(cli, "pkeyutl", "-derive",
+				"-inkey", theirsPrivPath, "-peerkey", oursPubPath, "-out", outPath).CombinedOutput()
+			if err != nil {
+				t.Fatalf("openssl pkeyutl -derive failed: %v\n%s", err, out)
+			}
+			cliSecret, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(mine, cliSecret) {
+				t.Fatalf("shared secret disagrees with openssl:\n  ours = %x\n  cli  = %x", mine, cliSecret)
+			}
+
+			// And the same in the other direction, so neither role is assumed.
+			theirsSecret, err := theirs.Derive(oursPubKey, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outPath2 := filepath.Join(dir, tc.name+"-cli2.bin")
+			out, err = exec.Command(cli, "pkeyutl", "-derive",
+				"-inkey", oursPrivPath, "-peerkey", theirsPubPath, "-out", outPath2).CombinedOutput()
+			if err != nil {
+				t.Fatalf("openssl pkeyutl -derive failed: %v\n%s", err, out)
+			}
+			cliSecret2, err := os.ReadFile(outPath2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(theirsSecret, cliSecret2) {
+				t.Fatal("reverse-direction shared secret disagrees with openssl")
+			}
+		})
+	}
+}
