@@ -65,6 +65,12 @@ type Provider struct {
 // LoadProvider loads a provider module by name into this context. Loading an
 // already-active provider returns the existing instance with its reference
 // count incremented, not a second copy.
+//
+// Do not call this with "fips" unless a config carrying the module MAC is
+// already in scope for the context. A FIPS load that fails self-test puts
+// the module into a process-wide error state that no later, correct
+// activation can recover from. Context.EnableFIPS orders the steps so that
+// cannot happen.
 func (c *Context) LoadProvider(name string) (*Provider, error) {
 	clearErrors()
 	cname := C.CString(name)

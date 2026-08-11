@@ -20,6 +20,14 @@
 // otherwise. AEAD is, including against a concurrent Close. Hash, MAC,
 // Signer and Verifier accumulate state across calls and are not.
 //
+// # FIPS
+//
+// NewFIPSContext builds a Context restricted to the FIPS 140-3 validated
+// module. Use it rather than loading the "fips" provider by hand: a FIPS
+// provider load that fails its self-test puts the module into an error state
+// that persists for the life of the process and cannot be recovered by any
+// later, correct activation.
+//
 // # Errors
 //
 // A failure inside OpenSSL is reported as an *Error carrying the whole

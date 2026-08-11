@@ -21,6 +21,11 @@ import "unsafe"
 // exactly this reason.
 type Context struct {
 	ctx *C.OSSL_LIB_CTX
+	// fips is the provider reference taken by EnableFIPS, held so that the
+	// provider stays live for the context's lifetime and is released with
+	// it. Unloading it early would silently drop the context back to
+	// unvalidated implementations.
+	fips *Provider
 }
 
 // Default is the implicit global library context -- what a NULL libctx means
@@ -64,6 +69,12 @@ func (c *Context) SetDefaultProperties(propq string) error {
 // is a no-op: its underlying pointer is already NULL, so there is nothing to
 // free.
 func (c *Context) Close() error {
+	// The provider must go first: it was loaded into this context, so
+	// unloading it after the context is freed would be a use-after-free.
+	if c.fips != nil {
+		c.fips.Unload()
+		c.fips = nil
+	}
 	if c.ctx != nil {
 		C.OSSL_LIB_CTX_free(c.ctx)
 		c.ctx = nil
