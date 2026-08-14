@@ -1,8 +1,10 @@
 # ossl — Makefile
 #
 # Targets:
-#   ci          — CI entry point: vet + fmt-check + test-race + cgocheck2
+#   ci          — CI entry point: vet + fmt-check + test-race + cgocheck2 + nocgo + api-parity
 #   build       — compile the package
+#   nocgo       — build, vet and test the CGO_ENABLED=0 stub configuration
+#   api-parity  — fail if the cgo and non-cgo builds export different APIs
 #   test        — run all tests (no race detector)
 #   test-race   — run all tests with the race detector
 #   cgocheck2   — run tests under the deep cgo pointer checker
@@ -11,7 +13,7 @@
 #   fmt-check   — fail if any Go source is unformatted
 #   clean       — remove build artifacts
 
-.PHONY: help build test test-race cgocheck2 vet fmt fmt-check ci clean
+.PHONY: help build nocgo api-parity test test-race cgocheck2 vet fmt fmt-check ci clean
 
 .DEFAULT_GOAL := help
 
@@ -36,6 +38,30 @@ help: ## Show this help (list all available targets)
 build: ## Compile the package
 	go build ./...
 
+nocgo: ## Build, vet and test the CGO_ENABLED=0 stub configuration
+	CGO_ENABLED=0 go build ./...
+	CGO_ENABLED=0 go vet ./...
+	CGO_ENABLED=0 go test -count=1 ./...
+
+api-parity: ## Fail if the cgo and non-cgo builds export different APIs
+	@# Building the stub only proves it compiles against its own tests, which
+	@# do not touch most of the surface: a changed signature in ossl/nocgo.go
+	@# slips through that entirely. Comparing the two exported APIs is what
+	@# actually catches drift. Struct bodies are normalised because the cgo
+	@# types carry unexported fields and the stubs are empty, which is a
+	@# difference of implementation rather than of API.
+	@go doc -all ./ossl 2>/dev/null \
+		| grep -E '^(func|type|var|const)|^    func' \
+		| sed -e 's/^ *//' -e 's/struct{}$$/struct {/' | sort > /tmp/ossl-api-cgo.txt
+	@CGO_ENABLED=0 go doc -all ./ossl 2>/dev/null \
+		| grep -E '^(func|type|var|const)|^    func' \
+		| sed -e 's/^ *//' -e 's/struct{}$$/struct {/' | sort > /tmp/ossl-api-nocgo.txt
+	@if ! diff -u /tmp/ossl-api-cgo.txt /tmp/ossl-api-nocgo.txt; then \
+		echo; echo "cgo and non-cgo builds export different APIs (see diff above)"; \
+		echo "update ossl/nocgo.go to match"; exit 1; \
+	fi
+	@echo "api-parity: cgo and non-cgo exports match ($$(wc -l < /tmp/ossl-api-cgo.txt) entries)"
+
 test: ## Run all unit tests (no race detector)
 	go test -count=1 ./...
 
@@ -57,7 +83,7 @@ fmt-check: ## Fail if any Go source is unformatted
 		echo "not gofmt'd:"; echo "$$unformatted"; exit 1; \
 	fi
 
-ci: vet fmt-check test-race cgocheck2 ## CI entry point: vet + fmt-check + test-race + cgocheck2
+ci: vet fmt-check test-race cgocheck2 nocgo api-parity ## CI entry point: vet + fmt-check + test-race + cgocheck2 + nocgo + api-parity
 
 clean: ## Remove build artifacts
 	go clean ./...
