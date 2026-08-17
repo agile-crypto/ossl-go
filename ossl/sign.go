@@ -10,7 +10,9 @@ package ossl
 import "C"
 
 import (
+	"encoding/asn1"
 	"fmt"
+	"math/big"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -41,6 +43,30 @@ const (
 	PSSSaltLengthHash PSSSaltLength = 0
 	PSSSaltLengthMax  PSSSaltLength = -1
 )
+
+// SignatureFormat selects how an ECDSA signature is encoded.
+//
+// OpenSSL only produces and consumes the DER form; the fixed-width form is
+// converted here. There is no OSSL_PARAM for it, so a caller that needs
+// IEEE P1363 -- JOSE's ES256, COSE, and most hardware interfaces -- would
+// otherwise have to re-encode by hand.
+type SignatureFormat int
+
+const (
+	// SignatureDER is the ASN.1 SEQUENCE of two INTEGERs from SEC 1, and
+	// what OpenSSL emits natively. Variable length.
+	SignatureDER SignatureFormat = iota
+	// SignatureP1363 is r and s as fixed-width big-endian integers, each
+	// the byte length of the curve order. Also called the raw form.
+	SignatureP1363
+)
+
+func (f SignatureFormat) String() string {
+	if f == SignatureP1363 {
+		return "IEEE P1363"
+	}
+	return "DER"
+}
 
 // SignOptions configures a signature. A nil *SignOptions selects sensible
 // defaults for the key's algorithm, which is what most callers want:
@@ -82,8 +108,18 @@ type SignOptions struct {
 	// PSSSaltLen applies to RSA-PSS only.
 	PSSSaltLen PSSSaltLength
 
-	// Deterministic selects RFC 6979 deterministic nonce generation for
-	// ECDSA. Setting it for any other algorithm is an error.
+	// MGF1Hash overrides the PSS mask-generation digest, which otherwise
+	// follows Digest. RSA only. Profiles that fix MGF1 to SHA-1 while
+	// signing with SHA-256 exist and cannot be expressed any other way.
+	MGF1Hash string
+
+	// Format selects the ECDSA signature encoding. EC keys only.
+	Format SignatureFormat
+
+	// Deterministic removes the randomness from a signature: RFC 6979 nonce
+	// generation for ECDSA, and the deterministic rather than hedged variant
+	// for ML-DSA and SLH-DSA. Setting it for any other algorithm is an
+	// error.
 	Deterministic bool
 }
 
@@ -123,11 +159,29 @@ func applyRSA(pctx *C.EVP_PKEY_CTX, o *SignOptions, digest string) error {
 	if C.EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, salt) <= 0 {
 		return newError("EVP_PKEY_CTX_set_rsa_pss_saltlen")
 	}
-	cd := C.CString(digest)
+	mgf1 := digest
+	if o.MGF1Hash != "" {
+		mgf1 = o.MGF1Hash
+	}
+	cd := C.CString(mgf1)
 	defer C.free(unsafe.Pointer(cd))
 	if C.EVP_PKEY_CTX_set_rsa_mgf1_md_name(pctx, cd, nil) <= 0 {
-		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name")
+		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name(" + mgf1 + ")")
 	}
+	return nil
+}
+
+// applyDeterministicPQC selects the deterministic rather than hedged variant
+// for ML-DSA and SLH-DSA. Both default to hedged, which FIPS 204 and 205
+// recommend; deterministic exists for reproducibility and for test vectors.
+func applyDeterministicPQC(pctx *C.EVP_PKEY_CTX) error {
+	p := newParams()
+	defer p.free()
+	p.Int(pKeyDeterministic, 1)
+	if C.EVP_PKEY_CTX_set_params(pctx, p.c()) <= 0 {
+		return newError("EVP_PKEY_CTX_set_params(deterministic)")
+	}
+	runtime.KeepAlive(p)
 	return nil
 }
 
@@ -254,8 +308,14 @@ func checkSignOptions(keyType string, o *SignOptions) error {
 		return fmt.Errorf("ossl: SignOptions.PSSSaltLen must be PSSSaltLengthHash, "+
 			"PSSSaltLengthMax, or a positive byte count, got %d", o.PSSSaltLen)
 	}
-	if o.Deterministic && !ec {
-		return fmt.Errorf("ossl: SignOptions.Deterministic (RFC 6979) is only valid for EC keys, got %s", keyType)
+	if o.Deterministic && !(ec || pqc) {
+		return fmt.Errorf("ossl: SignOptions.Deterministic is only valid for EC, ML-DSA and SLH-DSA keys, got %s", keyType)
+	}
+	if o.MGF1Hash != "" && !rsa {
+		return fmt.Errorf("ossl: SignOptions.MGF1Hash is only valid for RSA keys, got %s", keyType)
+	}
+	if o.Format != SignatureDER && !ec {
+		return fmt.Errorf("ossl: SignOptions.Format is only valid for EC keys, got %s", keyType)
 	}
 	// An RSA-PSS key carries its scheme in the key itself and cannot sign
 	// PKCS#1 v1.5, so a request for it is a caller error rather than
@@ -285,10 +345,68 @@ func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType string, o *SignOptions) erro
 	case keyType == "ED448":
 		return applyEd448(pctx, o)
 	case strings.HasPrefix(keyType, "ML-DSA"), strings.HasPrefix(keyType, "SLH-DSA"):
-		return applyContext(pctx, o.Context)
+		if err := applyContext(pctx, o.Context); err != nil {
+			return err
+		}
+		if o.Deterministic {
+			return applyDeterministicPQC(pctx)
+		}
+		return nil
 	default:
 		return nil
 	}
+}
+
+// ecdsaSigValue is SEC 1's ECDSA-Sig-Value: SEQUENCE { r INTEGER, s INTEGER }.
+type ecdsaSigValue struct {
+	R, S *big.Int
+}
+
+// ecdsaCoordinateLen is the fixed width of r and s for a key's curve. The
+// P1363 form has no length prefixes, so both halves must be padded to
+// exactly this, and a verifier splits on it.
+func ecdsaCoordinateLen(k *Key) int {
+	return (k.Bits() + 7) / 8
+}
+
+// derToP1363 re-encodes a DER ECDSA signature as fixed-width r||s.
+func derToP1363(der []byte, coord int) ([]byte, error) {
+	var v ecdsaSigValue
+	rest, err := asn1.Unmarshal(der, &v)
+	if err != nil {
+		return nil, fmt.Errorf("ossl: signature is not a DER ECDSA-Sig-Value: %w", err)
+	}
+	if len(rest) != 0 {
+		return nil, fmt.Errorf("ossl: %d trailing bytes after the DER signature", len(rest))
+	}
+	if v.R == nil || v.S == nil || v.R.Sign() < 0 || v.S.Sign() < 0 {
+		return nil, fmt.Errorf("ossl: DER signature has a missing or negative component")
+	}
+	rb, sb := v.R.Bytes(), v.S.Bytes()
+	if len(rb) > coord || len(sb) > coord {
+		return nil, fmt.Errorf("ossl: signature component is wider than the %d-byte curve order", coord)
+	}
+	out := make([]byte, 2*coord)
+	copy(out[coord-len(rb):coord], rb)
+	copy(out[2*coord-len(sb):], sb)
+	return out, nil
+}
+
+// p1363ToDER re-encodes a fixed-width r||s signature as DER.
+func p1363ToDER(raw []byte, coord int) ([]byte, error) {
+	if len(raw) != 2*coord {
+		return nil, fmt.Errorf("ossl: P1363 signature must be %d bytes for this curve, got %d",
+			2*coord, len(raw))
+	}
+	v := ecdsaSigValue{
+		R: new(big.Int).SetBytes(raw[:coord]),
+		S: new(big.Int).SetBytes(raw[coord:]),
+	}
+	der, err := asn1.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("ossl: re-encoding a P1363 signature as DER: %w", err)
+	}
+	return der, nil
 }
 
 // Sign produces a signature over msg.
@@ -348,7 +466,11 @@ func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
 		return nil, newError("EVP_DigestSign")
 	}
 	// n may shrink: ECDSA signatures are DER and vary by a byte or two.
-	return sig[:n], nil
+	out := sig[:n]
+	if o.Format == SignatureP1363 {
+		return derToP1363(out, ecdsaCoordinateLen(k))
+	}
+	return out, nil
 }
 
 // Verify checks a signature. It returns nil if the signature is valid,
@@ -394,6 +516,15 @@ func (k *Key) Verify(msg, sig []byte, opts *SignOptions) error {
 	}
 	if err := applySignOptions(pctx, k.Type(), o); err != nil {
 		return err
+	}
+
+	if o.Format == SignatureP1363 {
+		der, err := p1363ToDER(sig, ecdsaCoordinateLen(k))
+		if err != nil {
+			// A malformed signature is a rejection, not a fault.
+			return ErrVerification
+		}
+		sig = der
 	}
 
 	var mp *C.uchar

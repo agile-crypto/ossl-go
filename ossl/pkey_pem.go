@@ -91,6 +91,35 @@ func (k *Key) MarshalSEC1PEM() ([]byte, error) {
 	return k.encode(C.EVP_PKEY_KEYPAIR, "PEM", structSEC1)
 }
 
+// MarshalPKCS1 returns the DER-encoded PKCS#1 RSAPrivateKey. RSA keys only.
+//
+// This is the "type-specific" structure for RSA, the counterpart of SEC1 for
+// EC, and is what citius-server's WrapFormat calls PKCS1.
+func (k *Key) MarshalPKCS1() ([]byte, error) {
+	if t := k.Type(); t != "RSA" {
+		return nil, fmt.Errorf("ossl: MarshalPKCS1 requires an RSA key, got %s", t)
+	}
+	return k.encode(C.EVP_PKEY_KEYPAIR, "DER", structSEC1)
+}
+
+// MarshalPKCS1PEM returns the PEM-armored PKCS#1 RSAPrivateKey.
+func (k *Key) MarshalPKCS1PEM() ([]byte, error) {
+	if t := k.Type(); t != "RSA" {
+		return nil, fmt.Errorf("ossl: MarshalPKCS1PEM requires an RSA key, got %s", t)
+	}
+	return k.encode(C.EVP_PKEY_KEYPAIR, "PEM", structSEC1)
+}
+
+// ParsePKCS1PrivateKey parses a DER-encoded PKCS#1 RSAPrivateKey.
+func (c *Context) ParsePKCS1PrivateKey(der []byte) (*Key, error) {
+	return decodeKey(c, der, "DER", structSEC1, "RSA", C.EVP_PKEY_KEYPAIR)
+}
+
+// ParsePKCS1PrivateKeyPEM parses a PEM-armored PKCS#1 RSAPrivateKey.
+func (c *Context) ParsePKCS1PrivateKeyPEM(pemBytes []byte) (*Key, error) {
+	return decodeKey(c, pemBytes, "PEM", structSEC1, "RSA", C.EVP_PKEY_KEYPAIR)
+}
+
 // MarshalSPKI returns the DER-encoded X.509 SubjectPublicKeyInfo.
 func (k *Key) MarshalSPKI() ([]byte, error) {
 	return k.encode(C.EVP_PKEY_PUBLIC_KEY, "DER", structSPKI)

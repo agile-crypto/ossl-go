@@ -9,6 +9,7 @@ import "C"
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"hash"
 	"runtime"
 	"unsafe"
@@ -86,6 +87,90 @@ func (m *MAC) init() error {
 		return newError("EVP_MAC_init")
 	}
 	return nil
+}
+
+// MACParams carries the algorithm-specific parameters a MAC may need. Leave
+// the fields a given algorithm does not use at their zero value.
+//
+// Which fields matter per algorithm:
+//
+//	HMAC       Digest
+//	CMAC       Cipher
+//	GMAC       Cipher and IV -- GMAC is GCM fed only associated data, so it
+//	           needs a nonce, and reusing one under a key is as fatal here
+//	           as it is for GCM encryption
+//	KMAC       Size, optionally Custom
+//	SIPHASH    optionally Size (8 or 16)
+//	BLAKE2*MAC optionally Size, Custom
+//	POLY1305   nothing; the 32-byte key is the whole parameter set, and it
+//	           must never be reused across messages
+type MACParams struct {
+	// Digest names the hash for digest-based MACs.
+	Digest string
+	// Cipher names the block cipher for cipher-based MACs.
+	Cipher string
+	// IV is the nonce for GMAC.
+	IV []byte
+	// Custom is a customisation/personalisation string for KMAC and BLAKE2.
+	Custom []byte
+	// Size is the output length in bytes where the algorithm allows one.
+	Size int
+}
+
+func (p *MACParams) build() *params {
+	b := newParams()
+	if p == nil {
+		return b
+	}
+	if p.Digest != "" {
+		b.UTF8(pKeyDigest, p.Digest)
+	}
+	if p.Cipher != "" {
+		b.UTF8(pKeyCipher, p.Cipher)
+	}
+	if p.IV != nil {
+		b.Octets(pKeyIV, p.IV)
+	}
+	if len(p.Custom) > 0 {
+		b.Octets(pKeyCustom, p.Custom)
+	}
+	if p.Size > 0 {
+		b.SizeT(pKeySize, p.Size)
+	}
+	return b
+}
+
+// NewMAC returns a MAC of any algorithm the providers offer: "HMAC", "CMAC",
+// "GMAC", "KMAC-128", "KMAC-256", "POLY1305", "SIPHASH", "BLAKE2BMAC",
+// "BLAKE2SMAC".
+//
+// The named constructors below cover the common cases; this is the way to
+// reach GMAC, Poly1305, SipHash and BLAKE2, none of which fit a
+// digest-or-cipher shaped helper.
+func (c *Context) NewMAC(algorithm string, key []byte, p *MACParams) (*MAC, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
+	if algorithm == "" {
+		return nil, fmt.Errorf("ossl: MAC algorithm name is empty")
+	}
+	if p != nil && p.Size < 0 {
+		return nil, fmt.Errorf("ossl: MAC output size must not be negative, got %d", p.Size)
+	}
+	if p != nil && p.Size > maxOutputLength {
+		return nil, fmt.Errorf("ossl: MAC output size %d exceeds the maximum of %d bytes",
+			p.Size, maxOutputLength)
+	}
+	return c.newMAC(algorithm, key, p.build())
+}
+
+// NewGMAC returns a GMAC over the named cipher, e.g. "AES-256-GCM". The IV
+// must be unique for every message under a given key.
+func (c *Context) NewGMAC(cipher string, key, iv []byte) (*MAC, error) {
+	if len(iv) == 0 {
+		return nil, fmt.Errorf("ossl: GMAC requires an IV")
+	}
+	return c.NewMAC("GMAC", key, &MACParams{Cipher: cipher, IV: iv})
 }
 
 // NewHMAC returns an HMAC using the named digest, e.g. NewHMAC("SHA2-256", k).

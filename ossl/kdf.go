@@ -164,11 +164,49 @@ const (
 	maxArgon2Lanes      = 1024
 )
 
-// Argon2idParams configures Argon2id. Zero fields take library defaults.
+// Argon2Variant selects which Argon2 function to use.
+type Argon2Variant int
+
+const (
+	// Argon2ID is the hybrid variant and the default choice (RFC 9106).
+	Argon2ID Argon2Variant = iota
+	// Argon2I is data-independent: slower, but its memory access pattern
+	// does not depend on the password, which matters where side channels
+	// are a concern.
+	Argon2I
+	// Argon2D is data-dependent: strongest against GPU attack, but its
+	// access pattern leaks through timing. Use it only where no adversary
+	// can observe the machine.
+	Argon2D
+)
+
+func (v Argon2Variant) name() (string, error) {
+	switch v {
+	case Argon2ID:
+		return "ARGON2ID", nil
+	case Argon2I:
+		return "ARGON2I", nil
+	case Argon2D:
+		return "ARGON2D", nil
+	default:
+		return "", fmt.Errorf("ossl: unknown Argon2 variant %d", int(v))
+	}
+}
+
+// Argon2idParams configures Argon2. Zero fields take library defaults.
 type Argon2idParams struct {
 	Iterations uint // time cost
 	MemoryKiB  uint // memory cost in kibibytes
 	Lanes      uint // parallelism
+
+	// AssociatedData is Argon2's optional AD input: non-secret context
+	// bound into the hash, the way HKDF's info is.
+	AssociatedData []byte
+
+	// Secret is Argon2's optional secret input, the "pepper": a key held by
+	// the application rather than stored beside the hash, so that a stolen
+	// database alone does not permit offline cracking.
+	Secret []byte
 }
 
 // Argon2id derives a key from a password using Argon2id, which is preferable
@@ -198,8 +236,18 @@ type Argon2idParams struct {
 // the larger one, dropping the ceiling below what the other call already
 // depends on.
 func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
+	return c.Argon2(Argon2ID, password, salt, ap, n)
+}
+
+// Argon2 derives a key using the named Argon2 variant. Argon2id is the one
+// to pick unless a specification says otherwise; see Argon2id.
+func (c *Context) Argon2(variant Argon2Variant, password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
 	if c == nil {
 		return nil, ErrClosed
+	}
+	alg, err := variant.name()
+	if err != nil {
+		return nil, err
 	}
 	// Same reasoning as maxPBKDF2Iterations: these are cost parameters, the
 	// call cannot be interrupted, and memcost is an allocation request as
@@ -248,6 +296,12 @@ func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]b
 		UInt(pKeyArgonLane, ap.Lanes).
 		UInt(pKeyThreads, ap.Lanes).
 		SizeT(pKeySize, n)
+	if len(ap.AssociatedData) > 0 {
+		p = p.Octets(pKeyArgonAD, ap.AssociatedData)
+	}
+	if len(ap.Secret) > 0 {
+		p = p.Octets(pKeySecret, ap.Secret)
+	}
 	defer p.free()
-	return c.deriveKDF("ARGON2ID", p, n)
+	return c.deriveKDF(alg, p, n)
 }

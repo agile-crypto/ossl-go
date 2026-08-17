@@ -137,9 +137,11 @@ func EqualMAC(a, b []byte) bool {
 type KDFParams map[string]any
 
 type Argon2idParams struct {
-	Iterations uint
-	MemoryKiB  uint
-	Lanes      uint
+	Iterations     uint
+	MemoryKiB      uint
+	Lanes          uint
+	AssociatedData []byte
+	Secret         []byte
 }
 
 func (c *Context) DeriveKDF(name string, kp KDFParams, n int) ([]byte, error) {
@@ -261,6 +263,8 @@ type SignOptions struct {
 	Prehash       bool
 	Padding       RSAPadding
 	PSSSaltLen    PSSSaltLength
+	MGF1Hash      string
+	Format        SignatureFormat
 	Deterministic bool
 }
 
@@ -361,3 +365,132 @@ func NewSecureBuffer(n int) (*SecureBuffer, error) { return nil, ErrUnavailable 
 func (b *SecureBuffer) Bytes() []byte { return nil }
 func (b *SecureBuffer) Len() int      { return 0 }
 func (b *SecureBuffer) Close() error  { return nil }
+
+// --- non-AEAD symmetric ciphers, key wrap -----------------------------------
+
+type PaddingScheme int
+
+const (
+	PaddingPKCS7 PaddingScheme = iota
+	PaddingNone
+	PaddingISO7816
+	PaddingX923
+	PaddingZero
+)
+
+func (p PaddingScheme) String() string {
+	switch p {
+	case PaddingPKCS7:
+		return "PKCS#7"
+	case PaddingNone:
+		return "none"
+	case PaddingISO7816:
+		return "ISO/IEC 7816-4"
+	case PaddingX923:
+		return "ANSI X9.23"
+	case PaddingZero:
+		return "zero"
+	default:
+		return "unknown"
+	}
+}
+
+type Cipher struct{}
+
+type cipherConfig struct {
+	padding PaddingScheme
+	ivLen   int
+	ivSet   bool
+}
+
+type CipherOption func(*cipherConfig)
+
+func WithPadding(p PaddingScheme) CipherOption { return func(c *cipherConfig) { c.padding = p } }
+func WithCipherIVSize(n int) CipherOption {
+	return func(c *cipherConfig) { c.ivLen = n; c.ivSet = true }
+}
+
+func (c *Context) NewCipher(name string, key []byte, opts ...CipherOption) (*Cipher, error) {
+	return nil, ErrUnavailable
+}
+
+func (x *Cipher) IVSize() int            { return 0 }
+func (x *Cipher) BlockSize() int         { return 0 }
+func (x *Cipher) Name() string           { return "" }
+func (x *Cipher) Padding() PaddingScheme { return PaddingPKCS7 }
+func (x *Cipher) Encrypt(dst, iv, plaintext []byte) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+func (x *Cipher) Decrypt(dst, iv, ciphertext []byte) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+func (x *Cipher) Close() error { return nil }
+
+type KeyWrap struct{}
+
+func (c *Context) NewKeyWrap(kek []byte, withPadding bool) (*KeyWrap, error) {
+	return nil, ErrUnavailable
+}
+func (w *KeyWrap) Name() string                            { return "" }
+func (w *KeyWrap) Wrap(keyMaterial []byte) ([]byte, error) { return nil, ErrUnavailable }
+func (w *KeyWrap) Unwrap(wrapped []byte) ([]byte, error)   { return nil, ErrUnavailable }
+func (w *KeyWrap) Close() error                            { return nil }
+
+// --- generic MAC ------------------------------------------------------------
+
+type MACParams struct {
+	Digest string
+	Cipher string
+	IV     []byte
+	Custom []byte
+	Size   int
+}
+
+func (c *Context) NewMAC(algorithm string, key []byte, p *MACParams) (*MAC, error) {
+	return nil, ErrUnavailable
+}
+func (c *Context) NewGMAC(cipher string, key, iv []byte) (*MAC, error) {
+	return nil, ErrUnavailable
+}
+
+// --- Argon2 variants --------------------------------------------------------
+
+type Argon2Variant int
+
+const (
+	Argon2ID Argon2Variant = iota
+	Argon2I
+	Argon2D
+)
+
+func (c *Context) Argon2(variant Argon2Variant, password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+
+// --- signature format -------------------------------------------------------
+
+type SignatureFormat int
+
+const (
+	SignatureDER SignatureFormat = iota
+	SignatureP1363
+)
+
+func (f SignatureFormat) String() string {
+	if f == SignatureP1363 {
+		return "IEEE P1363"
+	}
+	return "DER"
+}
+
+// --- RSA PKCS#1 v1.5 encryption and PKCS#1 key encoding ---------------------
+
+func (k *Key) EncryptPKCS1v15(plaintext []byte) ([]byte, error)  { return nil, ErrUnavailable }
+func (k *Key) DecryptPKCS1v15(ciphertext []byte) ([]byte, error) { return nil, ErrUnavailable }
+func (k *Key) MarshalPKCS1() ([]byte, error)                     { return nil, ErrUnavailable }
+func (k *Key) MarshalPKCS1PEM() ([]byte, error)                  { return nil, ErrUnavailable }
+
+func (c *Context) ParsePKCS1PrivateKey(der []byte) (*Key, error) { return nil, ErrUnavailable }
+func (c *Context) ParsePKCS1PrivateKeyPEM(pemBytes []byte) (*Key, error) {
+	return nil, ErrUnavailable
+}

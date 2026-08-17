@@ -269,7 +269,13 @@ func TestSignOptionsRejectsInapplicableOptions(t *testing.T) {
 		{"salt length on EC", ec, &SignOptions{PSSSaltLen: 32}},
 		{"deterministic on Ed25519", ed, &SignOptions{Deterministic: true}},
 		{"deterministic on RSA", rsa, &SignOptions{Deterministic: true}},
-		{"deterministic on ML-DSA", mldsa, &SignOptions{Deterministic: true}},
+		// Deterministic on ML-DSA was rejected here until ML-DSA and SLH-DSA
+		// gained the deterministic-versus-hedged choice that FIPS 204
+		// defines and citius-server's MlDsaParams.deterministic exposes. It
+		// is now a supported option, verified in
+		// TestAlgorithmParameterCoverage to produce stable signatures where
+		// the hedged default produces different ones each time, so the case
+		// moved out of this list rather than being loosened in place.
 		{"unknown negative salt length", rsa, &SignOptions{PSSSaltLen: -7}},
 	}
 	for _, c := range cases {
