@@ -87,6 +87,9 @@ func WithTagSize(n int) AEADOption {
 // "AES-128-GCM", "AES-256-GCM", "ChaCha20-Poly1305", "AES-256-OCB",
 // "AES-256-CCM".
 func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	clearErrors()
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -165,9 +168,26 @@ func validateAEADSizes(name string, ccm bool, cfg aeadConfig) error {
 	return nil
 }
 
-func (a *AEAD) NonceSize() int { return a.nonce }
-func (a *AEAD) Overhead() int  { return a.tag }
-func (a *AEAD) Name() string   { return a.name }
+func (a *AEAD) NonceSize() int {
+	if a == nil {
+		return 0
+	}
+	return a.nonce
+}
+
+func (a *AEAD) Overhead() int {
+	if a == nil {
+		return 0
+	}
+	return a.tag
+}
+
+func (a *AEAD) Name() string {
+	if a == nil {
+		return ""
+	}
+	return a.name
+}
 
 // Seal encrypts and authenticates, appending ciphertext||tag to dst.
 //
@@ -189,6 +209,9 @@ func (a *AEAD) Seal(dst, nonce, plaintext, aad []byte) []byte {
 // arbitrary forgery. A random 96-bit nonce is safe to roughly 2^32 messages
 // per key; a strictly increasing counter is safer.
 func (a *AEAD) SealErr(dst, nonce, plaintext, aad []byte) ([]byte, error) {
+	if a == nil {
+		return nil, ErrClosed
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.closed {
@@ -332,6 +355,9 @@ func initEncrypt(ctx *C.EVP_CIPHER_CTX, a *AEAD, nonce []byte) error {
 // since distinguishing "which call noticed" from a remote party would leak
 // more than a decrypt failure should.
 func (a *AEAD) Open(dst, nonce, ciphertext, aad []byte) ([]byte, error) {
+	if a == nil {
+		return nil, ErrClosed
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.closed {
@@ -456,6 +482,9 @@ func initDecrypt(ctx *C.EVP_CIPHER_CTX, a *AEAD, nonce, tag []byte) error {
 // it waits for them to finish first, and any that start afterward get
 // ErrClosed.
 func (a *AEAD) Close() error {
+	if a == nil {
+		return nil
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.closed {

@@ -34,6 +34,10 @@ var _ hash.Hash = (*MAC)(nil)
 
 // newMAC is the single constructor the public ones funnel into.
 func (c *Context) newMAC(algorithm string, key []byte, p *params) (*MAC, error) {
+	if c == nil {
+		p.free()
+		return nil, ErrClosed
+	}
 	clearErrors()
 	calg := C.CString(algorithm)
 	defer C.free(unsafe.Pointer(calg))
@@ -111,7 +115,7 @@ func (c *Context) NewKMAC(bits int, key []byte, outLen int, custom []byte) (*MAC
 }
 
 func (m *MAC) Write(b []byte) (int, error) {
-	if m.ctx == nil {
+	if m == nil || m.ctx == nil {
 		return 0, ErrClosed
 	}
 	if len(b) == 0 {
@@ -128,6 +132,9 @@ func (m *MAC) Write(b []byte) (int, error) {
 
 // Sum appends the tag to b, leaving the MAC state intact.
 func (m *MAC) Sum(b []byte) []byte {
+	if m == nil {
+		return b
+	}
 	if m.ctx == nil {
 		m.err = ErrClosed
 		return b
@@ -156,7 +163,7 @@ func (m *MAC) Sum(b []byte) []byte {
 
 // Reset restores the initial state, reusing the key and options.
 func (m *MAC) Reset() {
-	if m.ctx == nil {
+	if m == nil || m.ctx == nil {
 		return
 	}
 	if err := m.init(); err != nil {
@@ -164,12 +171,32 @@ func (m *MAC) Reset() {
 	}
 }
 
-func (m *MAC) Size() int      { return m.size }
-func (m *MAC) BlockSize() int { return m.bs }
-func (m *MAC) Err() error     { return m.err }
+func (m *MAC) Size() int {
+	if m == nil {
+		return 0
+	}
+	return m.size
+}
+
+func (m *MAC) BlockSize() int {
+	if m == nil {
+		return 0
+	}
+	return m.bs
+}
+
+func (m *MAC) Err() error {
+	if m == nil {
+		return ErrClosed
+	}
+	return m.err
+}
 
 // Close releases C resources and cleanses the retained key copy.
 func (m *MAC) Close() error {
+	if m == nil {
+		return nil
+	}
 	if m.ctx != nil {
 		C.EVP_MAC_CTX_free(m.ctx)
 		m.ctx = nil

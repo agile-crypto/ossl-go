@@ -64,6 +64,9 @@ func NewContext() (*Context, error) {
 // precisely the shared-state hazard Context exists to let callers avoid by
 // using a context of their own instead.
 func (c *Context) SetDefaultProperties(propq string) error {
+	if c == nil {
+		return ErrClosed
+	}
 	clearErrors()
 	cq := C.CString(propq)
 	defer C.free(unsafe.Pointer(cq))
@@ -77,6 +80,9 @@ func (c *Context) SetDefaultProperties(propq string) error {
 // is a no-op: its underlying pointer is already NULL, so there is nothing to
 // free.
 func (c *Context) Close() error {
+	if c == nil {
+		return nil
+	}
 	// The provider must go first: it was loaded into this context, so
 	// unloading it after the context is freed would be a use-after-free.
 	if c.fips != nil {

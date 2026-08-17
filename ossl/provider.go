@@ -74,6 +74,9 @@ type Provider struct {
 // activation can recover from. Context.EnableFIPS orders the steps so that
 // cannot happen.
 func (c *Context) LoadProvider(name string) (*Provider, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	clearErrors()
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -88,7 +91,7 @@ func (c *Context) LoadProvider(name string) (*Provider, error) {
 // pointer is cleared before the C call runs, so a second call is always a
 // no-op regardless of whether the first call succeeded.
 func (p *Provider) Unload() error {
-	if p.prov == nil {
+	if p == nil || p.prov == nil {
 		return nil
 	}
 	prov := p.prov
@@ -102,6 +105,9 @@ func (p *Provider) Unload() error {
 // ProviderAvailable reports whether a provider by that name is currently
 // active in this context, without loading it.
 func (c *Context) ProviderAvailable(name string) bool {
+	if c == nil {
+		return false
+	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	return C.OSSL_PROVIDER_available(c.ptr(), cname) == 1
@@ -121,6 +127,9 @@ type ProviderInfo struct {
 // silently returning a truncated list that a caller could mistake for the
 // whole set.
 func (c *Context) Providers() ([]ProviderInfo, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	clearErrors()
 	var list C.ossl_provider_list
 	if C.OSSL_PROVIDER_do_all(c.ptr(), (*[0]byte)(C.ossl_collect_provider), unsafe.Pointer(&list)) != 1 {
@@ -153,6 +162,9 @@ func (c *Context) Providers() ([]ProviderInfo, error) {
 // the context via SetDefaultProperties; pass "" to use the context's own
 // default.
 func (c *Context) DigestAvailable(name, propq string) bool {
+	if c == nil {
+		return false
+	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	var cq *C.char
@@ -172,6 +184,9 @@ func (c *Context) DigestAvailable(name, propq string) bool {
 // CipherAvailable reports whether a symmetric cipher can be fetched through
 // this context. propq behaves as in DigestAvailable.
 func (c *Context) CipherAvailable(name, propq string) bool {
+	if c == nil {
+		return false
+	}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	var cq *C.char

@@ -37,7 +37,7 @@ const (
 )
 
 func (k *Key) encode(selection C.int, outType, structure string) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
@@ -105,7 +105,7 @@ func (k *Key) MarshalSPKIPEM() ([]byte, error) {
 // Supported for X25519, Ed25519, and (OpenSSL 3.5+) ML-KEM and ML-DSA. RSA
 // and EC keys have no raw representation and return an error.
 func (k *Key) MarshalRawPrivateKey() ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
@@ -126,7 +126,7 @@ func (k *Key) MarshalRawPrivateKey() ([]byte, error) {
 // MarshalRawPublicKey returns the algorithm-native public key bytes.
 // Supported for the same algorithms as MarshalRawPrivateKey.
 func (k *Key) MarshalRawPublicKey() ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
@@ -149,6 +149,9 @@ func (k *Key) MarshalRawPublicKey() ([]byte, error) {
 // structSEC1, whose DER carries no AlgorithmIdentifier of its own; pass ""
 // for structPKCS8 and structSPKI, which are self-describing.
 func decodeKey(ctx *Context, in []byte, inType, structure, keytype string, selection C.int) (*Key, error) {
+	if ctx == nil {
+		return nil, ErrClosed
+	}
 	if len(in) == 0 {
 		return nil, fmt.Errorf("ossl: empty key input")
 	}
@@ -216,6 +219,9 @@ func (c *Context) ParseSPKIPublicKeyPEM(pemBytes []byte) (*Key, error) {
 // ParseRawPrivateKey builds a key from algorithm-native private key bytes.
 // algorithm selects the key type, e.g. "X25519", "ED25519", "ML-KEM-768".
 func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("ossl: empty raw key input")
 	}
@@ -232,6 +238,9 @@ func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error)
 
 // ParseRawPublicKey builds a key from algorithm-native public key bytes.
 func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("ossl: empty raw key input")
 	}
@@ -256,6 +265,9 @@ func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) 
 // fails outright for a key whose algorithm only exists in an isolated
 // context -- a FIPS-only or PKCS#11 context being the cases that matter.
 func (k *Key) Public() (*Key, error) {
+	if k == nil || k.pkey == nil {
+		return nil, ErrClosed
+	}
 	spki, err := k.MarshalSPKI()
 	if err != nil {
 		return nil, err
@@ -266,7 +278,7 @@ func (k *Key) Public() (*Key, error) {
 // context is the Context this key belongs to, falling back to the global
 // default for a zero-value Key.
 func (k *Key) context() *Context {
-	if k.ctx == nil {
+	if k == nil || k.ctx == nil {
 		return Default
 	}
 	return k.ctx

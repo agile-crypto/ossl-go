@@ -104,7 +104,7 @@ func (k *Key) requireRSA(op string) error {
 // messages: for anything larger, encrypt a fresh symmetric key here and the
 // message itself with an AEAD under that key.
 func (k *Key) Encrypt(plaintext []byte, opts *OAEPOptions) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	if err := k.requireRSA("Encrypt"); err != nil {
@@ -132,6 +132,9 @@ func (k *Key) Encrypt(plaintext []byte, opts *OAEPOptions) ([]byte, error) {
 	if C.EVP_PKEY_encrypt(ctx, nil, &n, pp, C.size_t(len(plaintext))) <= 0 {
 		return nil, newError("EVP_PKEY_encrypt(size)")
 	}
+	if n == 0 {
+		return nil, newError("EVP_PKEY_encrypt reported a zero-length ciphertext")
+	}
 	out := make([]byte, int(n))
 	rc := C.EVP_PKEY_encrypt(ctx, (*C.uchar)(unsafe.Pointer(&out[0])), &n,
 		pp, C.size_t(len(plaintext)))
@@ -152,7 +155,7 @@ func (k *Key) Encrypt(plaintext []byte, opts *OAEPOptions) ([]byte, error) {
 // reconstruct it just by forwarding the error. The OpenSSL error queue is
 // drained rather than attached for the same reason.
 func (k *Key) Decrypt(ciphertext []byte, opts *OAEPOptions) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	if err := k.requireRSA("Decrypt"); err != nil {
@@ -181,6 +184,11 @@ func (k *Key) Decrypt(ciphertext []byte, opts *OAEPOptions) ([]byte, error) {
 		clearErrors()
 		return nil, ErrVerification
 	}
+	if n == 0 {
+		// A zero-length plaintext is legitimate for OAEP, and there is
+		// nothing to copy out of it.
+		return []byte{}, nil
+	}
 	out := make([]byte, int(n))
 	rc := C.EVP_PKEY_decrypt(ctx, (*C.uchar)(unsafe.Pointer(&out[0])), &n,
 		cp, C.size_t(len(ciphertext)))
@@ -201,7 +209,7 @@ func (k *Key) Decrypt(ciphertext []byte, opts *OAEPOptions) ([]byte, error) {
 // exact bound, and computing it from the modulus and digest by hand is the
 // kind of arithmetic that is wrong by two bytes for years.
 func (k *Key) MaxOAEPPlaintext(opts *OAEPOptions) (int, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return 0, ErrClosed
 	}
 	if err := k.requireRSA("MaxOAEPPlaintext"); err != nil {
@@ -239,7 +247,7 @@ func (k *Key) MaxOAEPPlaintext(opts *OAEPOptions) (int, error) {
 // it is a concatenation. Run it through a KDF bound to a protocol-specific
 // context string before using it for anything.
 func (k *Key) Encapsulate() (ciphertext, secret []byte, err error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, nil, ErrClosed
 	}
 	clearErrors()
@@ -260,6 +268,9 @@ func (k *Key) Encapsulate() (ciphertext, secret []byte, err error) {
 	var ctLen, ssLen C.size_t
 	if C.EVP_PKEY_encapsulate(ctx, nil, &ctLen, nil, &ssLen) <= 0 {
 		return nil, nil, newError("EVP_PKEY_encapsulate(size)")
+	}
+	if ctLen == 0 || ssLen == 0 {
+		return nil, nil, newError("EVP_PKEY_encapsulate reported a zero-length output")
 	}
 	ct := make([]byte, int(ctLen))
 	ss := make([]byte, int(ssLen))
@@ -291,7 +302,7 @@ func (k *Key) Encapsulate() (ciphertext, secret []byte, err error) {
 // must have such a check -- an AEAD open, a MAC, a confirmation message --
 // or it will silently proceed with two different keys.
 func (k *Key) Decapsulate(ciphertext []byte) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	if len(ciphertext) == 0 {
@@ -315,6 +326,9 @@ func (k *Key) Decapsulate(ciphertext []byte) ([]byte, error) {
 	var n C.size_t
 	if C.EVP_PKEY_decapsulate(ctx, nil, &n, cp, C.size_t(len(ciphertext))) <= 0 {
 		return nil, newError("EVP_PKEY_decapsulate(size)")
+	}
+	if n == 0 {
+		return nil, newError("EVP_PKEY_decapsulate reported a zero-length secret")
 	}
 	ss := make([]byte, int(n))
 	rc := C.EVP_PKEY_decapsulate(ctx, (*C.uchar)(unsafe.Pointer(&ss[0])), &n,
@@ -382,7 +396,7 @@ type DeriveOptions struct {
 // change rather than an algorithm swap. That asymmetry is why the hybrid KEMs
 // exist.
 func (k *Key) Derive(peer *Key, opts *DeriveOptions) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	if peer == nil || peer.pkey == nil {
@@ -430,6 +444,9 @@ func (k *Key) Derive(peer *Key, opts *DeriveOptions) ([]byte, error) {
 	var n C.size_t
 	if C.EVP_PKEY_derive(ctx, nil, &n) <= 0 {
 		return nil, newError("EVP_PKEY_derive(size)")
+	}
+	if n == 0 {
+		return nil, newError("EVP_PKEY_derive reported a zero-length shared secret")
 	}
 	out := make([]byte, int(n))
 	rc := C.EVP_PKEY_derive(ctx, (*C.uchar)(unsafe.Pointer(&out[0])), &n)

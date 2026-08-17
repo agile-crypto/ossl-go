@@ -72,7 +72,7 @@ var _ io.Writer = (*Verifier)(nil)
 // rather than an inference about OpenSSL's, at the cost of one atomic
 // increment per stream.
 func streamInit(k *Key, opts *SignOptions, verify bool) (*C.EVP_MD_CTX, *C.EVP_PKEY, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, nil, ErrClosed
 	}
 	if k.oneShotOnly() {
@@ -143,13 +143,23 @@ func NewVerifier(k *Key, opts *SignOptions) (*Verifier, error) {
 }
 
 // Name reports the key algorithm this signer was built for.
-func (s *Signer) Name() string { return s.name }
+func (s *Signer) Name() string {
+	if s == nil {
+		return ""
+	}
+	return s.name
+}
 
 // Name reports the key algorithm this verifier was built for.
-func (v *Verifier) Name() string { return v.name }
+func (v *Verifier) Name() string {
+	if v == nil {
+		return ""
+	}
+	return v.name
+}
 
 func (s *Signer) Write(p []byte) (int, error) {
-	if s.mdctx == nil {
+	if s == nil || s.mdctx == nil {
 		return 0, ErrClosed
 	}
 	if s.done {
@@ -167,7 +177,7 @@ func (s *Signer) Write(p []byte) (int, error) {
 }
 
 func (v *Verifier) Write(p []byte) (int, error) {
-	if v.mdctx == nil {
+	if v == nil || v.mdctx == nil {
 		return 0, ErrClosed
 	}
 	if v.done {
@@ -189,7 +199,7 @@ func (v *Verifier) Write(p []byte) (int, error) {
 // reuse once finalised, so the restriction is enforced rather than left to
 // produce a surprising second result.
 func (s *Signer) Sign() ([]byte, error) {
-	if s.mdctx == nil {
+	if s == nil || s.mdctx == nil {
 		return nil, ErrClosed
 	}
 	if s.done {
@@ -198,6 +208,9 @@ func (s *Signer) Sign() ([]byte, error) {
 	var n C.size_t
 	if C.EVP_DigestSignFinal(s.mdctx, nil, &n) <= 0 {
 		return nil, newError("EVP_DigestSignFinal(size)")
+	}
+	if n == 0 {
+		return nil, newError("EVP_DigestSignFinal reported a zero-length signature")
 	}
 	sig := make([]byte, int(n))
 	rc := C.EVP_DigestSignFinal(s.mdctx, (*C.uchar)(unsafe.Pointer(&sig[0])), &n)
@@ -218,7 +231,7 @@ func (s *Signer) Sign() ([]byte, error) {
 //
 // Like Signer.Sign, this finalises the Verifier.
 func (v *Verifier) Verify(sig []byte) error {
-	if v.mdctx == nil {
+	if v == nil || v.mdctx == nil {
 		return ErrClosed
 	}
 	if v.done {
@@ -248,6 +261,9 @@ func (v *Verifier) Verify(sig []byte) error {
 // Close releases the signer, including its reference on the key. Safe to
 // call more than once.
 func (s *Signer) Close() error {
+	if s == nil {
+		return nil
+	}
 	if s.mdctx != nil {
 		C.EVP_MD_CTX_free(s.mdctx)
 		s.mdctx = nil
@@ -262,6 +278,9 @@ func (s *Signer) Close() error {
 // Close releases the verifier, including its reference on the key. Safe to
 // call more than once.
 func (v *Verifier) Close() error {
+	if v == nil {
+		return nil
+	}
 	if v.mdctx != nil {
 		C.EVP_MD_CTX_free(v.mdctx)
 		v.mdctx = nil

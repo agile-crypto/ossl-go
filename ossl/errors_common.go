@@ -56,3 +56,14 @@ var ErrClosed = errors.New("ossl: resource is closed")
 // OpenSSL, and so that the failure names the reason rather than surfacing as
 // a link error.
 var ErrUnavailable = errors.New("ossl: built without cgo; OpenSSL is unavailable")
+
+// maxOutputLength bounds any single variable-length output this package will
+// allocate: KDF output, XOF output, secure-buffer size.
+//
+// The allocation happens in Go, before OpenSSL is asked for anything, so an
+// implausible length is an out-of-memory kill of the whole process rather
+// than an error a caller can handle -- and it is exactly the kind of value
+// that arrives in a request as a four-byte integer. 64 MiB is orders of
+// magnitude above any key or keystream a caller has a reason to derive in
+// one call.
+const maxOutputLength = 64 << 20

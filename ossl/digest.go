@@ -41,6 +41,9 @@ var _ hash.Hash = (*Hash)(nil)
 // "SHA3-256", "SHAKE-256", "BLAKE2S-256", "SM3", and so on. Names are
 // case-insensitive and aliased ("SHA256" and "SHA-256" both work).
 func (c *Context) NewHash(name string) (*Hash, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	clearErrors()
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -71,10 +74,15 @@ func (c *Context) NewHash(name string) (*Hash, error) {
 
 // IsXOF reports whether this is an extendable-output function (SHAKE-128,
 // SHAKE-256), which must be finalised with SumXOF rather than Sum.
-func (h *Hash) IsXOF() bool { return h.xof }
+func (h *Hash) IsXOF() bool {
+	if h == nil {
+		return false
+	}
+	return h.xof
+}
 
 func (h *Hash) Write(p []byte) (int, error) {
-	if h.ctx == nil {
+	if h == nil || h.ctx == nil {
 		return 0, ErrClosed
 	}
 	if len(p) == 0 {
@@ -102,6 +110,9 @@ func (h *Hash) Write(p []byte) (int, error) {
 // rejected here rather than finalised at some arbitrary default length. Use
 // SumXOF, which requires the caller to say how many bytes they want.
 func (h *Hash) Sum(b []byte) []byte {
+	if h == nil {
+		return b
+	}
 	if h.ctx == nil {
 		h.err = ErrClosed
 		return b
@@ -136,11 +147,14 @@ func (h *Hash) Sum(b []byte) []byte {
 // bytes. Unlike Sum it consumes the state; the Hash must be Reset before
 // reuse.
 func (h *Hash) SumXOF(n int) ([]byte, error) {
-	if h.ctx == nil {
+	if h == nil || h.ctx == nil {
 		return nil, ErrClosed
 	}
 	if n <= 0 {
 		return nil, nil
+	}
+	if n > maxOutputLength {
+		return nil, fmt.Errorf("ossl: XOF output length %d exceeds the maximum of %d bytes", n, maxOutputLength)
 	}
 	out := make([]byte, n)
 	rc := C.EVP_DigestFinalXOF(h.ctx, (*C.uchar)(unsafe.Pointer(&out[0])), C.size_t(n))
@@ -153,7 +167,7 @@ func (h *Hash) SumXOF(n int) ([]byte, error) {
 
 // Reset returns the hash to its initial state.
 func (h *Hash) Reset() {
-	if h.ctx == nil {
+	if h == nil || h.ctx == nil {
 		return
 	}
 	if C.EVP_DigestInit_ex2(h.ctx, h.md, nil) != 1 {
@@ -161,15 +175,40 @@ func (h *Hash) Reset() {
 	}
 }
 
-func (h *Hash) Size() int      { return h.size }
-func (h *Hash) BlockSize() int { return h.bs }
-func (h *Hash) Name() string   { return h.name }
+func (h *Hash) Size() int {
+	if h == nil {
+		return 0
+	}
+	return h.size
+}
+
+func (h *Hash) BlockSize() int {
+	if h == nil {
+		return 0
+	}
+	return h.bs
+}
+
+func (h *Hash) Name() string {
+	if h == nil {
+		return ""
+	}
+	return h.name
+}
 
 // Err reports the first error latched by Write, Sum or Reset.
-func (h *Hash) Err() error { return h.err }
+func (h *Hash) Err() error {
+	if h == nil {
+		return ErrClosed
+	}
+	return h.err
+}
 
 // Close releases the C context. Safe to call more than once.
 func (h *Hash) Close() error {
+	if h == nil {
+		return nil
+	}
 	if h.ctx != nil {
 		C.EVP_MD_CTX_free(h.ctx)
 		h.ctx = nil

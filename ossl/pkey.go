@@ -73,6 +73,9 @@ func WithParam(key string, value any) KeyOption {
 // The post-quantum algorithms take no options: the parameter set is part of
 // the name.
 func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	clearErrors()
 	calg := C.CString(algorithm)
 	defer C.free(unsafe.Pointer(calg))
@@ -108,7 +111,7 @@ func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error)
 
 // Type reports the key's algorithm name, e.g. "RSA", "EC", "ML-DSA-65".
 func (k *Key) Type() string {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return ""
 	}
 	return C.GoString(C.EVP_PKEY_get0_type_name(k.pkey))
@@ -118,7 +121,7 @@ func (k *Key) Type() string {
 // families -- 15616 for ML-DSA-65 and 256 for Ed25519 measure different
 // things. Use SecurityBits to compare strength.
 func (k *Key) Bits() int {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return 0
 	}
 	return int(C.EVP_PKEY_get_bits(k.pkey))
@@ -128,7 +131,7 @@ func (k *Key) Bits() int {
 // across algorithms: RSA-3072, P-256, Ed25519 and SLH-DSA-128s all report
 // 128; ML-KEM-768 and ML-DSA-65 both report 192.
 func (k *Key) SecurityBits() int {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return 0
 	}
 	return int(C.EVP_PKEY_get_security_bits(k.pkey))
@@ -137,7 +140,7 @@ func (k *Key) SecurityBits() int {
 // Size is the maximum output size in bytes for a signature or an encryption
 // under this key.
 func (k *Key) Size() int {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return 0
 	}
 	return int(C.EVP_PKEY_get_size(k.pkey))
@@ -145,6 +148,9 @@ func (k *Key) Size() int {
 
 // Close releases the key. Safe to call more than once.
 func (k *Key) Close() error {
+	if k == nil {
+		return nil
+	}
 	if k.pkey != nil {
 		C.EVP_PKEY_free(k.pkey)
 		k.pkey = nil

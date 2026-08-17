@@ -45,6 +45,9 @@ func DefaultFIPSModuleConfig() string {
 // ProviderAvailable("fips") is true and fips=yes fetches resolve, with no
 // further call. What it does not do is restrict anything -- see EnableFIPS.
 func (c *Context) LoadConfig(path string) error {
+	if c == nil {
+		return ErrClosed
+	}
 	clearErrors()
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
@@ -58,7 +61,7 @@ func (c *Context) LoadConfig(path string) error {
 // power-on self-tests at load time; this re-runs them on demand, which
 // FIPS 140-3 operational guidance expects to be available.
 func (p *Provider) SelfTest() error {
-	if p.prov == nil {
+	if p == nil || p.prov == nil {
 		return ErrClosed
 	}
 	clearErrors()
@@ -126,6 +129,9 @@ func (c *Context) EnableFIPS(configPath string) error {
 // FIPSEnabled reports whether this context has been restricted to the FIPS
 // provider.
 func (c *Context) FIPSEnabled() bool {
+	if c == nil {
+		return false
+	}
 	return C.EVP_default_properties_is_fips_enabled(c.ptr()) == 1
 }
 

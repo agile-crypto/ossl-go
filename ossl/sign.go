@@ -298,7 +298,7 @@ func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType string, o *SignOptions) erro
 // updates outright, so a single code path is also the only correct one that
 // covers them.
 func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return nil, ErrClosed
 	}
 	o := k.signOpts(opts)
@@ -336,6 +336,9 @@ func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
 	if C.EVP_DigestSign(mdctx, nil, &n, mp, C.size_t(len(msg))) <= 0 {
 		return nil, newError("EVP_DigestSign(size)")
 	}
+	if n == 0 {
+		return nil, newError("EVP_DigestSign reported a zero-length signature")
+	}
 	sig := make([]byte, int(n))
 	rc := C.EVP_DigestSign(mdctx, (*C.uchar)(unsafe.Pointer(&sig[0])), &n,
 		mp, C.size_t(len(msg)))
@@ -362,7 +365,7 @@ func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
 // with the ordinary rejections, so it maps to ErrVerification too, with the
 // library detail preserved in the wrapped error for logs.
 func (k *Key) Verify(msg, sig []byte, opts *SignOptions) error {
-	if k.pkey == nil {
+	if k == nil || k.pkey == nil {
 		return ErrClosed
 	}
 	if len(sig) == 0 {

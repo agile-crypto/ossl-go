@@ -125,6 +125,9 @@ func NewSecureBuffer(n int) (*SecureBuffer, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("ossl: secure buffer size must be positive, got %d", n)
 	}
+	if n > maxOutputLength {
+		return nil, fmt.Errorf("ossl: secure buffer size %d exceeds the maximum of %d bytes", n, maxOutputLength)
+	}
 	if !SecureHeapInitialized() {
 		return nil, fmt.Errorf("ossl: secure heap is not initialised; call InitSecureHeap first")
 	}
@@ -149,18 +152,26 @@ func NewSecureBuffer(n int) (*SecureBuffer, error) {
 // straight back onto the ordinary heap -- so treat it as a view to read and
 // write in place, never as a value to grow or retain.
 func (b *SecureBuffer) Bytes() []byte {
-	if b.ptr == nil {
+	if b == nil || b.ptr == nil {
 		return nil
 	}
 	return unsafe.Slice((*byte)(b.ptr), b.n)
 }
 
 // Len is the buffer size in bytes.
-func (b *SecureBuffer) Len() int { return b.n }
+func (b *SecureBuffer) Len() int {
+	if b == nil {
+		return 0
+	}
+	return b.n
+}
 
 // Close wipes the buffer and returns it to the secure heap. Safe to call
 // more than once.
 func (b *SecureBuffer) Close() error {
+	if b == nil {
+		return nil
+	}
 	if b.ptr != nil {
 		C.ossl_secure_clear_free(b.ptr, C.size_t(b.n))
 		b.ptr = nil

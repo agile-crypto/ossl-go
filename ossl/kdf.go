@@ -27,8 +27,14 @@ var threadBudget sync.Mutex
 // this package has not grown a helper for (SSKDF, KBKDF, X963KDF, TLS13-KDF,
 // KRB5KDF ...) without forking the layer.
 func (c *Context) deriveKDF(name string, p *params, n int) ([]byte, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	if n <= 0 {
 		return nil, fmt.Errorf("ossl: output length must be positive")
+	}
+	if n > maxOutputLength {
+		return nil, fmt.Errorf("ossl: output length %d exceeds the maximum of %d bytes", n, maxOutputLength)
 	}
 	clearErrors()
 	cname := C.CString(name)
@@ -115,9 +121,30 @@ func (c *Context) HKDFExpand(digest string, prk, info []byte, n int) ([]byte, er
 	return c.deriveKDF("HKDF", p, n)
 }
 
+// maxPBKDF2Iterations bounds the work one PBKDF2 call may request.
+//
+// The bound exists because the cost is unbounded, uninterruptible and holds
+// an OS thread: a cgo call cannot be cancelled, so an over-large count is a
+// hang rather than a slow answer. Anywhere the iteration count arrives in a
+// request, that is a denial of service with a four-byte payload. Ten million
+// is well over an order of magnitude above OWASP's current guidance and
+// still returns in seconds.
+const maxPBKDF2Iterations = 10_000_000
+
 // PBKDF2 derives a key from a password. iterations is a cost parameter;
 // OWASP currently suggests at least 600000 for PBKDF2-HMAC-SHA256.
+//
+// iterations must be positive and no greater than ten million. A negative
+// value is rejected rather than converted: OpenSSL takes an unsigned count,
+// so -1 would silently become 4294967295 iterations and never return.
 func (c *Context) PBKDF2(digest string, password, salt []byte, iterations, n int) ([]byte, error) {
+	if iterations <= 0 {
+		return nil, fmt.Errorf("ossl: PBKDF2 iterations must be positive, got %d", iterations)
+	}
+	if iterations > maxPBKDF2Iterations {
+		return nil, fmt.Errorf("ossl: PBKDF2 iterations %d exceeds the maximum of %d",
+			iterations, maxPBKDF2Iterations)
+	}
 	p := newParams().
 		UTF8(pKeyDigest, digest).
 		Octets(pKeyPassword, password).
@@ -126,6 +153,16 @@ func (c *Context) PBKDF2(digest string, password, salt []byte, iterations, n int
 	defer p.free()
 	return c.deriveKDF("PBKDF2", p, n)
 }
+
+// Bounds on Argon2id's cost parameters, for the reason given on
+// maxPBKDF2Iterations. The limits are far above any sensible configuration:
+// 4 GiB of memory, 1024 lanes and ten thousand passes each cost far more
+// than a real deployment would choose.
+const (
+	maxArgon2Iterations = 10_000
+	maxArgon2MemoryKiB  = 4 * 1024 * 1024
+	maxArgon2Lanes      = 1024
+)
 
 // Argon2idParams configures Argon2id. Zero fields take library defaults.
 type Argon2idParams struct {
@@ -161,6 +198,25 @@ type Argon2idParams struct {
 // the larger one, dropping the ceiling below what the other call already
 // depends on.
 func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
+	// Same reasoning as maxPBKDF2Iterations: these are cost parameters, the
+	// call cannot be interrupted, and memcost is an allocation request as
+	// well as a delay. Unbounded values taken from a request are a hang or
+	// an out-of-memory kill, not a slow reply.
+	if ap.Iterations > maxArgon2Iterations {
+		return nil, fmt.Errorf("ossl: Argon2id iterations %d exceeds the maximum of %d",
+			ap.Iterations, maxArgon2Iterations)
+	}
+	if ap.MemoryKiB > maxArgon2MemoryKiB {
+		return nil, fmt.Errorf("ossl: Argon2id memory %d KiB exceeds the maximum of %d KiB",
+			ap.MemoryKiB, maxArgon2MemoryKiB)
+	}
+	if ap.Lanes > maxArgon2Lanes {
+		return nil, fmt.Errorf("ossl: Argon2id lanes %d exceeds the maximum of %d",
+			ap.Lanes, maxArgon2Lanes)
+	}
 	if ap.Iterations == 0 {
 		ap.Iterations = 3
 	}

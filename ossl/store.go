@@ -71,6 +71,9 @@ func (c *Context) LoadPublicKey(uri string) (*Key, error) {
 // loadKey opens the URI, narrows the search to one object type, and returns
 // the first match.
 func (c *Context) loadKey(uri string, expect C.int, what string) (*Key, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	if uri == "" {
 		return nil, fmt.Errorf("ossl: empty store URI")
 	}
@@ -133,6 +136,9 @@ type StoreObject struct {
 // Useful for a file: URI naming a directory, which yields the URIs of its
 // entries, and for inspecting a token before deciding what to load.
 func (c *Context) ListStore(uri string) ([]StoreObject, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
 	if uri == "" {
 		return nil, fmt.Errorf("ossl: empty store URI")
 	}
