@@ -35,8 +35,14 @@ type Context struct {
 // supplies a Context of their own.
 var Default = &Context{}
 
-// NewContext creates a new, isolated library context with no providers
-// loaded and no default properties set.
+// NewContext creates a new, isolated library context.
+//
+// It is not empty. OpenSSL activates the default provider in a fresh library
+// context, so digests and ciphers resolve immediately and Providers already
+// lists it. Isolation means this context has its own provider set and its
+// own default property query, not that it starts with nothing: loading the
+// FIPS provider here, or pinning a query with SetDefaultProperties, changes
+// only this context and never the implicit global one.
 func NewContext() (*Context, error) {
 	clearErrors()
 	ctx := C.OSSL_LIB_CTX_new()
