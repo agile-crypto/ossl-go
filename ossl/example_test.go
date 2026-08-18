@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/agile-crypto/ossl-go/ossl"
@@ -16,6 +18,11 @@ import (
 // These are compiled and run by `go test`, and their output is checked
 // against the Output comment, so they cannot drift away from the API the way
 // a README snippet can.
+//
+// ExampleNewFIPSContext_alongsideDefault is the one exception, and carries no
+// Output comment: it needs a FIPS module installed on the machine, so its
+// output is not the same everywhere. TestDualProviderRouting in fips_test.go
+// runs the same sequence with assertions and skips when the module is absent.
 
 func ExampleDigest() {
 	sum, err := ossl.Digest("SHA2-256", []byte("abc"))
@@ -282,4 +289,142 @@ func ExampleNewContext() {
 	// SHA2-256 available:       true
 	// MD5 in this context:      false
 	// MD5 in the default one:   true
+}
+
+// fipsExampleConfig writes an OpenSSL config that activates the FIPS provider
+// and returns its path, reporting false if this machine has no installed
+// module to point at.
+//
+// The config has to include the installation's own fipsmodule.cnf, which is
+// where `openssl fipsinstall` recorded the module's MAC. Without that include
+// the provider does not load -- and loading it without a config in scope is
+// the one thing never to do, because it takes the module into a process-wide
+// error state. NewFIPSContext exists to make that unreachable.
+func fipsExampleConfig() (path string, ok bool) {
+	moduleCnf := ossl.DefaultFIPSModuleConfig()
+	if _, err := os.Stat(moduleCnf); err != nil {
+		return "", false
+	}
+	dir, err := os.MkdirTemp("", "ossl-fips-example")
+	if err != nil {
+		return "", false
+	}
+	body := "openssl_conf = openssl_init\n" +
+		".include " + moduleCnf + "\n\n" +
+		"[openssl_init]\nproviders = provider_sect\n\n" +
+		"[provider_sect]\nfips = fips_sect\ndefault = default_sect\n\n" +
+		"[default_sect]\nactivate = 1\n"
+
+	path = filepath.Join(dir, "fips.cnf")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		os.RemoveAll(dir)
+		return "", false
+	}
+	return path, true
+}
+
+// Using the validated module and the default provider at the same time.
+//
+// A service that has to do some work under FIPS 140-3 and some outside it --
+// an approved signature for a request in a compliance scope, ChaCha20-Poly1305
+// for one that is not -- needs both providers live at once. Two contexts with
+// different policies give exactly that, and each request picks one.
+//
+// Operations take no per-call property query, deliberately. The policy lives
+// on the Context, so choosing the context is the only way to choose the
+// provider, and that choice is visible at the call site rather than buried in
+// a string argument that a caller could get wrong. For the same reason, do not
+// reach for SetDefaultProperties to flip a shared context back and forth: it
+// mutates state that every other goroutine holding that context can see.
+func ExampleNewFIPSContext_alongsideDefault() {
+	cfg, ok := fipsExampleConfig()
+	if !ok {
+		return // no validated module installed here
+	}
+	defer os.RemoveAll(filepath.Dir(cfg))
+
+	// Restricted: every fetch through this context resolves against the
+	// validated module, and what the module does not offer does not resolve.
+	strict, err := ossl.NewFIPSContext(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer strict.Close()
+
+	// Unrestricted. ossl.Default is the implicit global context; a separate
+	// ossl.NewContext() works equally well and keeps the two symmetric.
+	general := ossl.Default
+
+	// Route by asking rather than by hardcoding which algorithms are
+	// approved. That list belongs to the module and changes between
+	// versions; a table written here would be a second copy of it, wrong
+	// the first time the module is updated.
+	route := func(what string, capability ossl.Capability) *ossl.Context {
+		if err := strict.Supports(capability); err == nil {
+			fmt.Printf("%-22s -> fips\n", what)
+			return strict
+		}
+		if err := general.Supports(capability); err == nil {
+			fmt.Printf("%-22s -> default\n", what)
+			return general
+		}
+		fmt.Printf("%-22s -> unsupported\n", what)
+		return nil
+	}
+
+	signCtx := route("ECDSA P-256/SHA2-256",
+		ossl.SignatureCapability{Key: ossl.EC, Curve: ossl.P256, Digest: ossl.SHA256})
+	// Compiled into libcrypto, but not offered by the validated module, so
+	// this falls through to the unrestricted context rather than failing
+	// later inside a key generation.
+	route("ECDSA secp256k1",
+		ossl.SignatureCapability{Key: ossl.EC, Curve: ossl.Secp256k1, Digest: ossl.SHA256})
+	route("ML-DSA-65", ossl.SignatureCapability{Key: ossl.MLDSA65})
+	route("AES-256-GCM", ossl.AEADCapability{Cipher: ossl.AES256GCM})
+	sealCtx := route("ChaCha20-Poly1305", ossl.AEADCapability{Cipher: ossl.ChaCha20Poly1305})
+
+	// An approved signature, produced by the validated module.
+	key, err := signCtx.GenerateKey(ossl.EC, ossl.WithGroup(ossl.P256))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer key.Close()
+
+	msg := []byte("compliance-scoped request")
+	sig, err := key.Sign(msg, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("signed under fips:    ", key.Verify(msg, sig, nil) == nil)
+
+	// A key carries the context it was made in, so this signature stays a
+	// FIPS operation wherever the key is passed. Interoperability is at the
+	// encoding: the public key exports and verifies anywhere, because the
+	// output of a validated implementation is an ordinary ECDSA signature.
+	spki, err := key.MarshalSPKI()
+	if err != nil {
+		log.Fatal(err)
+	}
+	pub, err := general.ParseSPKIPublicKey(spki)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer pub.Close()
+	fmt.Println("verified outside fips:", pub.Verify(msg, sig, nil) == nil)
+
+	// And the non-approved work runs in the unrestricted context, in the
+	// same process, at the same time.
+	aead, err := sealCtx.NewAEAD(ossl.ChaCha20Poly1305, bytes.Repeat([]byte{0x2a}, 32))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer aead.Close()
+	ct := aead.Seal(nil, make([]byte, aead.NonceSize()), []byte("unscoped payload"), nil)
+	fmt.Println("sealed outside fips:  ", len(ct) > 0)
+
+	// The restricted context still refuses it, which is the guarantee that
+	// makes the split worth having.
+	if _, err := strict.NewAEAD(ossl.ChaCha20Poly1305, make([]byte, 32)); err != nil {
+		fmt.Println("fips refuses chacha:   true")
+	}
 }

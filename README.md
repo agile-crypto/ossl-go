@@ -38,6 +38,14 @@ rules it out.
 | Agreement | ECDH (incl. cofactor mode), X25519, X448 |
 | Keys | PKCS#8, SEC1, SPKI, raw; PEM and DER; `file:` and `pkcs11:` URIs |
 | Platform | isolated library contexts, provider loading, FIPS mode, secure heap |
+| Introspection | typed algorithm names, capability checks, live enumeration |
+
+Algorithm names are typed string constants (`ossl.SHA256`, `ossl.Ed25519`,
+`ossl.AES256GCM`, ...) rather than bare strings, so valid values are
+discoverable from the package. A `Context.Supports(capability)` check answers
+whether a given combination of algorithm, curve, digest and format will
+actually work before you rely on it — see the doc comments on `Capability`,
+`SignatureCapability` and `AEADCapability` in `ossl/capability.go`.
 
 ## A first program
 
@@ -57,7 +65,7 @@ func main() {
 	}
 
 	// The same code signs with a classical or a post-quantum key.
-	for _, alg := range []string{"ED25519", "ML-DSA-65"} {
+	for _, alg := range []ossl.KeyAlgorithm{ossl.Ed25519, ossl.MLDSA65} {
 		key, err := ossl.Default.GenerateKey(alg)
 		if err != nil {
 			log.Fatal(err)
@@ -74,14 +82,15 @@ func main() {
 }
 ```
 
-Runnable examples for AEAD, streaming signatures, KEM, ECDH and library
-contexts live in `ossl/example_test.go`. They are compiled and their output
-checked by `go test`, so they cannot drift from the API.
+Runnable examples — AEAD, streaming signatures, KEM, ECDH, library contexts,
+and running FIPS alongside the default provider — live in
+`ossl/example_test.go`. Their output is checked by `go test`, so they cannot
+drift from the API.
 
 ## Things worth knowing before you rely on this
 
-These are behaviours that surprised us while building it, each verified
-directly rather than taken from documentation.
+Each of these was verified directly against this build rather than taken
+from documentation.
 
 - **`Decapsulate` returning `nil` does not mean the ciphertext was genuine.**
   ML-KEM rejects implicitly: a corrupted encapsulation yields a different

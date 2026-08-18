@@ -304,3 +304,101 @@ func hexString(b []byte) string {
 	}
 	return string(out)
 }
+
+// The example ExampleNewFIPSContext_alongsideDefault cannot carry an Output
+// comment, because it needs an installed module. This asserts the claims it
+// makes, so the pattern it shows is checked rather than merely compiled.
+func TestDualProviderRouting(t *testing.T) {
+	cfg := fipsConfig(t)
+	strict, err := NewFIPSContext(cfg)
+	if err != nil {
+		t.Fatalf("NewFIPSContext: %v", err)
+	}
+	defer strict.Close()
+	general := Default
+
+	// Both contexts are live at once, and each answers for itself.
+	if !strict.FIPSEnabled() {
+		t.Fatal("the restricted context is not FIPS-enabled")
+	}
+	if general.FIPSEnabled() {
+		t.Fatal("the default context became FIPS-enabled; the restriction leaked")
+	}
+
+	route := func(capability Capability) *Context {
+		if err := strict.Supports(capability); err == nil {
+			return strict
+		}
+		if err := general.Supports(capability); err == nil {
+			return general
+		}
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		cap  Capability
+		want *Context
+	}{
+		{"ECDSA P-256/SHA2-256", SignatureCapability{Key: EC, Curve: P256, Digest: SHA256}, strict},
+		{"ML-DSA-65", SignatureCapability{Key: MLDSA65}, strict},
+		{"AES-256-GCM", AEADCapability{Cipher: AES256GCM}, strict},
+		// Built into libcrypto but not offered by the module, so these must
+		// route to the unrestricted context rather than be claimed by FIPS.
+		{"ECDSA secp256k1", SignatureCapability{Key: EC, Curve: Secp256k1, Digest: SHA256}, general},
+		{"ChaCha20-Poly1305", AEADCapability{Cipher: ChaCha20Poly1305}, general},
+	} {
+		got := route(tc.cap)
+		if got != tc.want {
+			gotName, wantName := "default", "default"
+			if got == strict {
+				gotName = "fips"
+			} else if got == nil {
+				gotName = "unsupported"
+			}
+			if tc.want == strict {
+				wantName = "fips"
+			}
+			t.Errorf("%s routed to %s, want %s", tc.name, gotName, wantName)
+			continue
+		}
+		// Routing is only worth anything if the chosen context can really
+		// do the work.
+		if err := got.VerifyCapability(tc.cap); err != nil {
+			t.Errorf("%s routed to a context that then failed: %v", tc.name, err)
+		}
+	}
+
+	// A signature made under the validated module verifies outside it: the
+	// output is an ordinary ECDSA signature, not a FIPS-flavoured one.
+	key, err := strict.GenerateKey(EC, WithGroup(P256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	msg := []byte("compliance-scoped request")
+	sig, err := key.Sign(msg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, err := key.MarshalSPKI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := general.ParseSPKIPublicKey(spki)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+	if err := pub.Verify(msg, sig, nil); err != nil {
+		t.Errorf("a FIPS-produced signature did not verify in the default context: %v", err)
+	}
+
+	// And the restriction still bites, which is the point of the split.
+	if _, err := strict.NewAEAD(ChaCha20Poly1305, make([]byte, 32)); err == nil {
+		t.Error("the FIPS context produced a ChaCha20-Poly1305 AEAD")
+	}
+	if _, err := general.NewAEAD(ChaCha20Poly1305, make([]byte, 32)); err != nil {
+		t.Errorf("the default context refused ChaCha20-Poly1305, making the check above vacuous: %v", err)
+	}
+}
