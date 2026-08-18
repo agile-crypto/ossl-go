@@ -496,3 +496,51 @@ func (c *Context) ParsePKCS1PrivateKeyPEM(pemBytes []byte) (*Key, error) {
 }
 
 func (c *Context) KeyAlgorithmAvailable(algorithm KeyAlgorithm) bool { return false }
+
+// --- capability queries and enumeration -------------------------------------
+
+type Capability interface {
+	check(*Context) error
+	trial(*Context) error
+	describe() string
+}
+
+func (c *Context) Supports(cap Capability) error         { return ErrUnavailable }
+func (c *Context) VerifyCapability(cap Capability) error { return ErrUnavailable }
+
+type SignatureCapability struct {
+	Key           KeyAlgorithm
+	Curve         Curve
+	Digest        DigestName
+	Format        SignatureFormat
+	Prehash       bool
+	Deterministic bool
+	Context       bool
+}
+
+func (s SignatureCapability) check(*Context) error { return ErrUnavailable }
+func (s SignatureCapability) trial(*Context) error { return ErrUnavailable }
+func (s SignatureCapability) describe() string     { return string(s.Key) }
+
+type AEADCapability struct {
+	Cipher   CipherName
+	KeyBytes int
+	IVBytes  int
+	TagBytes int
+}
+
+func (a AEADCapability) check(*Context) error { return ErrUnavailable }
+func (a AEADCapability) trial(*Context) error { return ErrUnavailable }
+func (a AEADCapability) describe() string     { return string(a.Cipher) }
+
+func (c *Context) ListDigests() ([]DigestName, error) { return nil, ErrUnavailable }
+func (c *Context) ListCiphers() ([]CipherName, error) { return nil, ErrUnavailable }
+func (c *Context) ListMACs() ([]MACName, error)       { return nil, ErrUnavailable }
+func (c *Context) ListKDFs() ([]KDFName, error)       { return nil, ErrUnavailable }
+func ListCurves() ([]Curve, error)                    { return nil, ErrUnavailable }
+
+func (c *Context) ParseDigestName(s string) (DigestName, error)     { return "", ErrUnavailable }
+func (c *Context) ParseCipherName(s string) (CipherName, error)     { return "", ErrUnavailable }
+func (c *Context) ParseKeyAlgorithm(s string) (KeyAlgorithm, error) { return "", ErrUnavailable }
+func (c *Context) ParseMACName(s string) (MACName, error)           { return "", ErrUnavailable }
+func (c *Context) ParseKDFName(s string) (KDFName, error)           { return "", ErrUnavailable }
