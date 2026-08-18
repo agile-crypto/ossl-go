@@ -186,7 +186,7 @@ func TestConcurrentSignVerifyOnSharedKey(t *testing.T) {
 func TestConcurrentKeyGeneration(t *testing.T) {
 	parallel(t, func(w int) error {
 		for i := 0; i < 5; i++ {
-			for _, alg := range []string{"EC", "ED25519", "ML-KEM-768"} {
+			for _, alg := range []KeyAlgorithm{"EC", "ED25519", "ML-KEM-768"} {
 				var opts []KeyOption
 				if alg == "EC" {
 					opts = []KeyOption{WithGroup("P-256")}

@@ -339,7 +339,7 @@ func TestOAEPDecryptFailuresAreIndistinguishable(t *testing.T) {
 
 func TestOAEPRejectsNonRSAKeys(t *testing.T) {
 	for _, tc := range []struct {
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"EC", []KeyOption{WithGroup("P-256")}},
@@ -448,7 +448,7 @@ func TestOAEPInteropWithOpenSSLCLI(t *testing.T) {
 
 	for _, tc := range []struct {
 		name     string
-		goHash   string
+		goHash   DigestName
 		cliMD    string
 		label    []byte
 		labelHex string
@@ -520,11 +520,11 @@ func TestOAEPInteropWithOpenSSLCLI(t *testing.T) {
 }
 
 func TestKEMRoundTrip(t *testing.T) {
-	for _, alg := range []string{
+	for _, alg := range []KeyAlgorithm{
 		"ML-KEM-512", "ML-KEM-768", "ML-KEM-1024",
 		"X25519MLKEM768", "X25519", "X448", "RSA",
 	} {
-		t.Run(alg, func(t *testing.T) {
+		t.Run(string(alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(alg)
 			if err != nil {
 				t.Skipf("%s unavailable: %v", alg, err)
@@ -607,8 +607,8 @@ func TestKEMEncapsulationIsFresh(t *testing.T) {
 // authenticity are wrong, and this test exists so that the day OpenSSL starts
 // returning an error instead, somebody notices deliberately.
 func TestKEMImplicitRejection(t *testing.T) {
-	for _, alg := range []string{"ML-KEM-768", "X25519MLKEM768"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"ML-KEM-768", "X25519MLKEM768"} {
+		t.Run(string(alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(alg)
 			if err != nil {
 				t.Skipf("%s unavailable: %v", alg, err)
@@ -715,7 +715,7 @@ func TestKEMClosedKey(t *testing.T) {
 // A signature-only key has no KEM at all and must say so rather than
 // producing something.
 func TestKEMRejectsSignatureOnlyKeys(t *testing.T) {
-	for _, alg := range []string{"ED25519", "ML-DSA-65"} {
+	for _, alg := range []KeyAlgorithm{"ED25519", "ML-DSA-65"} {
 		k, err := Default.GenerateKey(alg)
 		if err != nil {
 			t.Fatal(err)
@@ -732,7 +732,7 @@ func TestKEMRejectsSignatureOnlyKeys(t *testing.T) {
 func TestDeriveAgreement(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"EC-P-256", "EC", []KeyOption{WithGroup("P-256")}},
@@ -976,7 +976,7 @@ func TestDeriveInteropWithOpenSSLCLI(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"EC-P-256", "EC", []KeyOption{WithGroup("P-256")}},

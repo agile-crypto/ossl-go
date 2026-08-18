@@ -11,7 +11,7 @@ import (
 func TestSignVerifyRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"RSA", "RSA", nil},
@@ -23,7 +23,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	}
 	msg := []byte("the quick brown fox jumps over the lazy dog")
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(string(c.name), func(t *testing.T) {
 			k, err := Default.GenerateKey(c.alg, c.opts...)
 			if err != nil {
 				t.Fatal(err)
@@ -379,7 +379,7 @@ func TestDefaultDigestBySecurityLevel(t *testing.T) {
 }
 
 func TestOneShotOnly(t *testing.T) {
-	cases := map[string]bool{
+	cases := map[KeyAlgorithm]bool{
 		"RSA":               false,
 		"EC":                false,
 		"ED25519":           true,

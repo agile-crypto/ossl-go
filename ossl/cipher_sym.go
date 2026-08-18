@@ -73,7 +73,7 @@ type Cipher struct {
 	mu      sync.RWMutex
 	cipher  *C.EVP_CIPHER
 	key     []byte
-	name    string
+	name    CipherName
 	ivLen   int
 	blockSz int
 	padding PaddingScheme
@@ -106,17 +106,17 @@ func WithCipherIVSize(n int) CipherOption {
 //
 // AEAD modes are refused here and belong to NewAEAD, which is the type that
 // can carry associated data and a tag.
-func (c *Context) NewCipher(name string, key []byte, opts ...CipherOption) (*Cipher, error) {
+func (c *Context) NewCipher(name CipherName, key []byte, opts ...CipherOption) (*Cipher, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 
 	ci := C.EVP_CIPHER_fetch(c.ptr(), cname, nil)
 	if ci == nil {
-		return nil, newError("EVP_CIPHER_fetch(" + name + ")")
+		return nil, newError("EVP_CIPHER_fetch(" + string(name) + ")")
 	}
 	mode := C.EVP_CIPHER_get_mode(ci)
 	if mode == C.EVP_CIPH_GCM_MODE || mode == C.EVP_CIPH_CCM_MODE ||
@@ -173,7 +173,7 @@ func (x *Cipher) BlockSize() int {
 }
 
 // Name reports the algorithm name.
-func (x *Cipher) Name() string {
+func (x *Cipher) Name() CipherName {
 	if x == nil {
 		return ""
 	}
@@ -443,7 +443,7 @@ type KeyWrap struct {
 	mu     sync.RWMutex
 	cipher *C.EVP_CIPHER
 	kek    []byte
-	name   string
+	name   CipherName
 	padded bool
 	closed bool
 }
@@ -457,7 +457,7 @@ func (c *Context) NewKeyWrap(kek []byte, withPadding bool) (*KeyWrap, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
-	var name string
+	var name CipherName
 	switch len(kek) {
 	case 16:
 		name = "AES-128-WRAP"
@@ -473,11 +473,11 @@ func (c *Context) NewKeyWrap(kek []byte, withPadding bool) (*KeyWrap, error) {
 	}
 
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 	ci := C.EVP_CIPHER_fetch(c.ptr(), cname, nil)
 	if ci == nil {
-		return nil, newError("EVP_CIPHER_fetch(" + name + ")")
+		return nil, newError("EVP_CIPHER_fetch(" + string(name) + ")")
 	}
 	return &KeyWrap{
 		cipher: ci,
@@ -488,7 +488,7 @@ func (c *Context) NewKeyWrap(kek []byte, withPadding bool) (*KeyWrap, error) {
 }
 
 // Name reports the wrapping algorithm.
-func (w *KeyWrap) Name() string {
+func (w *KeyWrap) Name() CipherName {
 	if w == nil {
 		return ""
 	}

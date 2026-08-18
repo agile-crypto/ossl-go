@@ -28,7 +28,7 @@ import (
 type Hash struct {
 	ctx  *C.EVP_MD_CTX
 	md   *C.EVP_MD
-	name string
+	name DigestName
 	size int
 	bs   int
 	xof  bool
@@ -40,17 +40,17 @@ var _ hash.Hash = (*Hash)(nil)
 // NewHash fetches a digest by OpenSSL name through this context: "SHA2-256",
 // "SHA3-256", "SHAKE-256", "BLAKE2S-256", "SM3", and so on. Names are
 // case-insensitive and aliased ("SHA256" and "SHA-256" both work).
-func (c *Context) NewHash(name string) (*Hash, error) {
+func (c *Context) NewHash(name DigestName) (*Hash, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 
 	md := C.EVP_MD_fetch(c.ptr(), cname, nil)
 	if md == nil {
-		return nil, newError("EVP_MD_fetch(" + name + ")")
+		return nil, newError("EVP_MD_fetch(" + string(name) + ")")
 	}
 	ctx := C.EVP_MD_CTX_new()
 	if ctx == nil {
@@ -189,7 +189,7 @@ func (h *Hash) BlockSize() int {
 	return h.bs
 }
 
-func (h *Hash) Name() string {
+func (h *Hash) Name() DigestName {
 	if h == nil {
 		return ""
 	}
@@ -227,7 +227,7 @@ func (h *Hash) Close() error {
 // here explicitly. Returning a digest and a nil error without this check
 // would mean handing back an empty slice that compares equal to every other
 // failed digest.
-func Digest(name string, data []byte) ([]byte, error) {
+func Digest(name DigestName, data []byte) ([]byte, error) {
 	h, err := Default.NewHash(name)
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ func Digest(name string, data []byte) ([]byte, error) {
 
 // DigestXOF is the one-shot form for SHAKE-128 / SHAKE-256 against the
 // global default context.
-func DigestXOF(name string, data []byte, n int) ([]byte, error) {
+func DigestXOF(name DigestName, data []byte, n int) ([]byte, error) {
 	h, err := Default.NewHash(name)
 	if err != nil {
 		return nil, err

@@ -41,7 +41,7 @@ type AEAD struct {
 	mu     sync.RWMutex
 	cipher *C.EVP_CIPHER
 	key    []byte
-	name   string
+	name   CipherName
 	nonce  int
 	tag    int
 	ccm    bool
@@ -86,17 +86,17 @@ func WithTagSize(n int) AEADOption {
 // NewAEAD fetches an AEAD cipher by OpenSSL name through this context:
 // "AES-128-GCM", "AES-256-GCM", "ChaCha20-Poly1305", "AES-256-OCB",
 // "AES-256-CCM".
-func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, error) {
+func (c *Context) NewAEAD(name CipherName, key []byte, opts ...AEADOption) (*AEAD, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 
 	ci := C.EVP_CIPHER_fetch(c.ptr(), cname, nil)
 	if ci == nil {
-		return nil, newError("EVP_CIPHER_fetch(" + name + ")")
+		return nil, newError("EVP_CIPHER_fetch(" + string(name) + ")")
 	}
 	want := int(C.EVP_CIPHER_get_key_length(ci))
 	if len(key) != want {
@@ -149,7 +149,7 @@ func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, e
 // AesCcmParams accepts exactly that range. GCM, OCB and ChaCha20-Poly1305
 // truncate a full 16-byte tag instead, where a short tag is pure strength
 // reduction, so the floor there is the 96 bits SP 800-38D calls for.
-func validateAEADSizes(name string, ccm bool, cfg aeadConfig) error {
+func validateAEADSizes(name CipherName, ccm bool, cfg aeadConfig) error {
 	if ccm {
 		if cfg.ivLen < 7 || cfg.ivLen > 13 {
 			return fmt.Errorf("ossl: %s nonce must be 7-13 bytes per NIST SP 800-38C, got %d", name, cfg.ivLen)
@@ -182,7 +182,7 @@ func (a *AEAD) Overhead() int {
 	return a.tag
 }
 
-func (a *AEAD) Name() string {
+func (a *AEAD) Name() CipherName {
 	if a == nil {
 		return ""
 	}

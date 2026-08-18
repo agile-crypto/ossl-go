@@ -7,7 +7,7 @@ import "testing"
 func TestGenerateKeyAcrossAlgorithms(t *testing.T) {
 	cases := []struct {
 		name string
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"RSA", "RSA", []KeyOption{WithRSABits(3072)}},
@@ -16,7 +16,7 @@ func TestGenerateKeyAcrossAlgorithms(t *testing.T) {
 		{"X25519", "X25519", nil},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(string(c.name), func(t *testing.T) {
 			k, err := Default.GenerateKey(c.alg, c.opts...)
 			if err != nil {
 				t.Fatalf("GenerateKey(%s): %v", c.alg, err)
@@ -40,13 +40,13 @@ func TestGenerateKeyAcrossAlgorithms(t *testing.T) {
 // ML-DSA, SLH-DSA, and the IETF hybrid KEM, all new in OpenSSL 3.5 and all
 // taking no KeyOption since the parameter set is baked into the name.
 func TestGenerateKeyPQC(t *testing.T) {
-	for _, alg := range []string{
+	for _, alg := range []KeyAlgorithm{
 		"ML-KEM-768",
 		"ML-DSA-65",
 		"SLH-DSA-SHA2-128s",
 		"X25519MLKEM768",
 	} {
-		t.Run(alg, func(t *testing.T) {
+		t.Run(string(alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(alg)
 			if err != nil {
 				t.Fatalf("GenerateKey(%s): %v", alg, err)
@@ -69,7 +69,7 @@ func TestGenerateKeyPQC(t *testing.T) {
 // 3.5.2 build earlier in this project.
 func TestSecurityBitsComparableAcrossFamilies(t *testing.T) {
 	level128 := []struct {
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"RSA", []KeyOption{WithRSABits(3072)}},
@@ -88,7 +88,7 @@ func TestSecurityBitsComparableAcrossFamilies(t *testing.T) {
 		k.Close()
 	}
 
-	level192 := []string{"ML-KEM-768", "ML-DSA-65"}
+	level192 := []KeyAlgorithm{"ML-KEM-768", "ML-DSA-65"}
 	for _, alg := range level192 {
 		k, err := Default.GenerateKey(alg)
 		if err != nil {

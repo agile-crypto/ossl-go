@@ -26,7 +26,7 @@ var threadBudget sync.Mutex
 // wrapper over it, and it is exported as DeriveKDF so callers can reach KDFs
 // this package has not grown a helper for (SSKDF, KBKDF, X963KDF, TLS13-KDF,
 // KRB5KDF ...) without forking the layer.
-func (c *Context) deriveKDF(name string, p *params, n int) ([]byte, error) {
+func (c *Context) deriveKDF(name KDFName, p *params, n int) ([]byte, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
@@ -37,12 +37,12 @@ func (c *Context) deriveKDF(name string, p *params, n int) ([]byte, error) {
 		return nil, fmt.Errorf("ossl: output length %d exceeds the maximum of %d bytes", n, maxOutputLength)
 	}
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 
 	kdf := C.EVP_KDF_fetch(c.ptr(), cname, nil)
 	if kdf == nil {
-		return nil, newError("EVP_KDF_fetch(" + name + ")")
+		return nil, newError("EVP_KDF_fetch(" + string(name) + ")")
 	}
 	defer C.EVP_KDF_free(kdf)
 
@@ -57,14 +57,14 @@ func (c *Context) deriveKDF(name string, p *params, n int) ([]byte, error) {
 	runtime.KeepAlive(out)
 	runtime.KeepAlive(p)
 	if rc != 1 {
-		return nil, newError("EVP_KDF_derive(" + name + ")")
+		return nil, newError("EVP_KDF_derive(" + string(name) + ")")
 	}
 	return out, nil
 }
 
 // KDFParams is the caller-facing form of an OSSL_PARAM set for DeriveKDF.
 // Keys are OpenSSL parameter names; values may be string, []byte, int or uint.
-type KDFParams map[string]any
+type KDFParams map[ParamKey]any
 
 // DeriveKDF runs any KDF the provider offers.
 //
@@ -73,19 +73,19 @@ type KDFParams map[string]any
 //	    "key":    sharedSecret,
 //	    "info":   []byte("context"),
 //	}, 32)
-func (c *Context) DeriveKDF(name string, kp KDFParams, n int) ([]byte, error) {
+func (c *Context) DeriveKDF(name KDFName, kp KDFParams, n int) ([]byte, error) {
 	p := newParams()
 	defer p.free()
 	for k, v := range kp {
 		switch t := v.(type) {
 		case string:
-			p.UTF8(k, t)
+			p.UTF8(string(k), t)
 		case []byte:
-			p.Octets(k, t)
+			p.Octets(string(k), t)
 		case int:
-			p.Int(k, t)
+			p.Int(string(k), t)
 		case uint:
-			p.UInt(k, t)
+			p.UInt(string(k), t)
 		default:
 			return nil, fmt.Errorf("ossl: unsupported parameter type %T for %q", v, k)
 		}
@@ -98,22 +98,22 @@ func (c *Context) DeriveKDF(name string, kp KDFParams, n int) ([]byte, error) {
 // info is the domain separator: derive an encryption key and a MAC key from
 // one secret by varying it. Reusing the same info for two purposes silently
 // yields the same key twice.
-func (c *Context) HKDF(digest string, secret, salt, info []byte, n int) ([]byte, error) {
+func (c *Context) HKDF(digest DigestName, secret, salt, info []byte, n int) ([]byte, error) {
 	p := newParams().
-		UTF8(pKeyDigest, digest).
+		UTF8(pKeyDigest, string(digest)).
 		Octets(pKeyKey, secret).
 		Octets(pKeySalt, salt).
 		Octets(pKeyInfo, info).
 		Int(pKeyMode, int(C.EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND))
 	defer p.free()
-	return c.deriveKDF("HKDF", p, n)
+	return c.deriveKDF(KDFHKDF, p, n)
 }
 
 // HKDFExpand performs expand-only, for when the secret is already uniform
 // (a KEM output that has been extracted, a PRK from a prior extract step).
-func (c *Context) HKDFExpand(digest string, prk, info []byte, n int) ([]byte, error) {
+func (c *Context) HKDFExpand(digest DigestName, prk, info []byte, n int) ([]byte, error) {
 	p := newParams().
-		UTF8(pKeyDigest, digest).
+		UTF8(pKeyDigest, string(digest)).
 		Octets(pKeyKey, prk).
 		Octets(pKeyInfo, info).
 		Int(pKeyMode, int(C.EVP_KDF_HKDF_MODE_EXPAND_ONLY))
@@ -137,7 +137,7 @@ const maxPBKDF2Iterations = 10_000_000
 // iterations must be positive and no greater than ten million. A negative
 // value is rejected rather than converted: OpenSSL takes an unsigned count,
 // so -1 would silently become 4294967295 iterations and never return.
-func (c *Context) PBKDF2(digest string, password, salt []byte, iterations, n int) ([]byte, error) {
+func (c *Context) PBKDF2(digest DigestName, password, salt []byte, iterations, n int) ([]byte, error) {
 	if iterations <= 0 {
 		return nil, fmt.Errorf("ossl: PBKDF2 iterations must be positive, got %d", iterations)
 	}
@@ -146,12 +146,12 @@ func (c *Context) PBKDF2(digest string, password, salt []byte, iterations, n int
 			iterations, maxPBKDF2Iterations)
 	}
 	p := newParams().
-		UTF8(pKeyDigest, digest).
+		UTF8(pKeyDigest, string(digest)).
 		Octets(pKeyPassword, password).
 		Octets(pKeySalt, salt).
 		UInt(pKeyIter, uint(iterations))
 	defer p.free()
-	return c.deriveKDF("PBKDF2", p, n)
+	return c.deriveKDF(KDFPBKDF2, p, n)
 }
 
 // Bounds on Argon2id's cost parameters, for the reason given on
@@ -180,14 +180,14 @@ const (
 	Argon2D
 )
 
-func (v Argon2Variant) name() (string, error) {
+func (v Argon2Variant) name() (KDFName, error) {
 	switch v {
 	case Argon2ID:
-		return "ARGON2ID", nil
+		return KDFArgon2id, nil
 	case Argon2I:
-		return "ARGON2I", nil
+		return KDFArgon2i, nil
 	case Argon2D:
-		return "ARGON2D", nil
+		return KDFArgon2d, nil
 	default:
 		return "", fmt.Errorf("ossl: unknown Argon2 variant %d", int(v))
 	}

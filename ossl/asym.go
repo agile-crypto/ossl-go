@@ -22,13 +22,13 @@ import (
 // empty label, which is what interoperable protocols use.
 type OAEPOptions struct {
 	// Hash is the OAEP digest and, unless MGF1Hash is set, the MGF1 digest.
-	Hash string
+	Hash DigestName
 
 	// MGF1Hash overrides the mask-generation digest. Almost always leave
 	// empty: the two digests match in every mainstream profile, and this
 	// package sets both explicitly from whatever is supplied rather than
 	// leaving the MGF1 digest to a default.
-	MGF1Hash string
+	MGF1Hash DigestName
 
 	// Label is bound into the padding but not transmitted. Both sides must
 	// supply the same bytes or decryption fails. Known as the label in
@@ -36,8 +36,8 @@ type OAEPOptions struct {
 	Label []byte
 }
 
-func (o *OAEPOptions) resolve() (hash, mgf1 string, label []byte) {
-	hash, mgf1 = "SHA2-256", ""
+func (o *OAEPOptions) resolve() (hash, mgf1 DigestName, label []byte) {
+	hash, mgf1 = SHA256, ""
 	if o != nil {
 		if o.Hash != "" {
 			hash = o.Hash
@@ -57,15 +57,15 @@ func applyOAEP(ctx *C.EVP_PKEY_CTX, o *OAEPOptions) error {
 	if C.EVP_PKEY_CTX_set_rsa_padding(ctx, C.RSA_PKCS1_OAEP_PADDING) <= 0 {
 		return newError("EVP_PKEY_CTX_set_rsa_padding(OAEP)")
 	}
-	ch := C.CString(hash)
+	ch := C.CString(string(hash))
 	defer C.free(unsafe.Pointer(ch))
 	if C.EVP_PKEY_CTX_set_rsa_oaep_md_name(ctx, ch, nil) <= 0 {
-		return newError("EVP_PKEY_CTX_set_rsa_oaep_md_name(" + hash + ")")
+		return newError("EVP_PKEY_CTX_set_rsa_oaep_md_name(" + string(hash) + ")")
 	}
-	cm := C.CString(mgf1)
+	cm := C.CString(string(mgf1))
 	defer C.free(unsafe.Pointer(cm))
 	if C.EVP_PKEY_CTX_set_rsa_mgf1_md_name(ctx, cm, nil) <= 0 {
-		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name(" + mgf1 + ")")
+		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name(" + string(mgf1) + ")")
 	}
 	if len(label) > 0 {
 		// set0 takes ownership: on success the context frees this buffer, so
@@ -360,7 +360,7 @@ func (k *Key) Encapsulate() (ciphertext, secret []byte, err error) {
 	defer C.EVP_PKEY_CTX_free(ctx)
 
 	if C.EVP_PKEY_encapsulate_init(ctx, nil) <= 0 {
-		return nil, nil, newError("EVP_PKEY_encapsulate_init(" + k.Type() + ")")
+		return nil, nil, newError("EVP_PKEY_encapsulate_init(" + string(k.Type()) + ")")
 	}
 	if err := setKEMOp(ctx, k.Type()); err != nil {
 		return nil, nil, err
@@ -418,7 +418,7 @@ func (k *Key) Decapsulate(ciphertext []byte) ([]byte, error) {
 	defer C.EVP_PKEY_CTX_free(ctx)
 
 	if C.EVP_PKEY_decapsulate_init(ctx, nil) <= 0 {
-		return nil, newError("EVP_PKEY_decapsulate_init(" + k.Type() + ")")
+		return nil, newError("EVP_PKEY_decapsulate_init(" + string(k.Type()) + ")")
 	}
 	if err := setKEMOp(ctx, k.Type()); err != nil {
 		return nil, err
@@ -453,8 +453,8 @@ func (k *Key) Decapsulate(ciphertext []byte) ([]byte, error) {
 // worse thing to depend on than a name: if RSA ever gains a second KEM
 // operation, code that named the one it wanted keeps working and code that
 // relied on the default silently changes what it produces.
-func setKEMOp(ctx *C.EVP_PKEY_CTX, keyType string) error {
-	if !strings.EqualFold(keyType, "RSA") {
+func setKEMOp(ctx *C.EVP_PKEY_CTX, keyType KeyAlgorithm) error {
+	if !strings.EqualFold(string(keyType), "RSA") {
 		return nil
 	}
 	op := C.CString("RSASVE")

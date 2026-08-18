@@ -78,7 +78,7 @@ type SignOptions struct {
 	// Digest is the hash name, e.g. "SHA2-256". Leave empty to accept the
 	// default for the key type; algorithms that hash internally (Ed25519,
 	// ML-DSA, SLH-DSA) ignore it entirely.
-	Digest string
+	Digest DigestName
 
 	// Context is the domain-separation context for algorithms that use one:
 	// Ed25519ctx and Ed25519ph, Ed448 (including Ed448ph), ML-DSA (FIPS 204
@@ -111,7 +111,7 @@ type SignOptions struct {
 	// MGF1Hash overrides the PSS mask-generation digest, which otherwise
 	// follows Digest. RSA only. Profiles that fix MGF1 to SHA-1 while
 	// signing with SHA-256 exist and cannot be expressed any other way.
-	MGF1Hash string
+	MGF1Hash DigestName
 
 	// Format selects the ECDSA signature encoding. EC keys only.
 	Format SignatureFormat
@@ -137,7 +137,7 @@ func (k *Key) signOpts(o *SignOptions) *SignOptions {
 // applyRSA sets padding options on the borrowed EVP_PKEY_CTX handed back by
 // EVP_DigestSignInit_ex/EVP_DigestVerifyInit_ex. That context belongs to the
 // EVP_MD_CTX -- it must not be freed here.
-func applyRSA(pctx *C.EVP_PKEY_CTX, o *SignOptions, digest string) error {
+func applyRSA(pctx *C.EVP_PKEY_CTX, o *SignOptions, digest DigestName) error {
 	if o.Padding == RSAPKCS1v15 {
 		if C.EVP_PKEY_CTX_set_rsa_padding(pctx, C.RSA_PKCS1_PADDING) <= 0 {
 			return newError("EVP_PKEY_CTX_set_rsa_padding")
@@ -163,10 +163,10 @@ func applyRSA(pctx *C.EVP_PKEY_CTX, o *SignOptions, digest string) error {
 	if o.MGF1Hash != "" {
 		mgf1 = o.MGF1Hash
 	}
-	cd := C.CString(mgf1)
+	cd := C.CString(string(mgf1))
 	defer C.free(unsafe.Pointer(cd))
 	if C.EVP_PKEY_CTX_set_rsa_mgf1_md_name(pctx, cd, nil) <= 0 {
-		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name(" + mgf1 + ")")
+		return newError("EVP_PKEY_CTX_set_rsa_mgf1_md_name(" + string(mgf1) + ")")
 	}
 	return nil
 }
@@ -279,12 +279,12 @@ const maxContextLength = 255
 // Every field is compared against its zero value, so "unset" and "explicitly
 // the default" are deliberately the same thing -- there is no way to ask for
 // PSS on an Ed25519 key by accident, only to leave the RSA fields alone.
-func checkSignOptions(keyType string, o *SignOptions) error {
+func checkSignOptions(keyType KeyAlgorithm, o *SignOptions) error {
 	rsa := keyType == "RSA" || keyType == "RSA-PSS"
 	ec := keyType == "EC"
 	ed25519 := keyType == "ED25519"
 	ed448 := keyType == "ED448"
-	pqc := strings.HasPrefix(keyType, "ML-DSA") || strings.HasPrefix(keyType, "SLH-DSA")
+	pqc := strings.HasPrefix(string(keyType), "ML-DSA") || strings.HasPrefix(string(keyType), "SLH-DSA")
 
 	if o.Context != nil && !(ed25519 || ed448 || pqc) {
 		return fmt.Errorf("ossl: %s signatures have no domain-separation context; "+
@@ -331,7 +331,7 @@ func checkSignOptions(keyType string, o *SignOptions) error {
 // keyType. Options that do not apply have already been rejected by
 // checkSignOptions, so anything reaching here is either used or genuinely
 // absent.
-func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType string, o *SignOptions) error {
+func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType KeyAlgorithm, o *SignOptions) error {
 	switch {
 	case keyType == "RSA", keyType == "RSA-PSS":
 		return applyRSA(pctx, o, o.Digest)
@@ -344,7 +344,7 @@ func applySignOptions(pctx *C.EVP_PKEY_CTX, keyType string, o *SignOptions) erro
 		return applyEd25519(pctx, o)
 	case keyType == "ED448":
 		return applyEd448(pctx, o)
-	case strings.HasPrefix(keyType, "ML-DSA"), strings.HasPrefix(keyType, "SLH-DSA"):
+	case strings.HasPrefix(string(keyType), "ML-DSA"), strings.HasPrefix(string(keyType), "SLH-DSA"):
 		if err := applyContext(pctx, o.Context); err != nil {
 			return err
 		}
@@ -433,7 +433,7 @@ func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) {
 
 	var cd *C.char
 	if o.Digest != "" {
-		cd = C.CString(o.Digest)
+		cd = C.CString(string(o.Digest))
 		defer C.free(unsafe.Pointer(cd))
 	}
 	var pctx *C.EVP_PKEY_CTX
@@ -507,7 +507,7 @@ func (k *Key) Verify(msg, sig []byte, opts *SignOptions) error {
 
 	var cd *C.char
 	if o.Digest != "" {
-		cd = C.CString(o.Digest)
+		cd = C.CString(string(o.Digest))
 		defer C.free(unsafe.Pointer(cd))
 	}
 	var pctx *C.EVP_PKEY_CTX

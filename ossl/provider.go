@@ -73,16 +73,44 @@ type Provider struct {
 // the module into a process-wide error state that no later, correct
 // activation can recover from. Context.EnableFIPS orders the steps so that
 // cannot happen.
-func (c *Context) LoadProvider(name string) (*Provider, error) {
+func (c *Context) LoadProvider(name ProviderName) (*Provider, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
+	// A failed load must not take the context's existing algorithms with it.
+	//
+	// OSSL_PROVIDER_load turns off a context's implicit fallback to the
+	// default provider, and does so even when the load fails. Verified
+	// directly: on a context that had not yet activated anything -- which
+	// Default has not, until its first successful fetch -- one failed
+	// LoadProvider("") left every later fetch returning "unsupported" for
+	// the life of the process. A caller probing whether a provider exists
+	// would lose all cryptography.
+	//
+	// Loading with retain_fallbacks set avoids disabling the fallback, but
+	// changes the success path too: the context then holds both the implicit
+	// and the explicit provider, and freeing it aborted inside
+	// OSSL_LIB_CTX_free. So the fallback is restored only on the failure
+	// path, and only when it was there to begin with -- a context
+	// deliberately narrowed to one provider keeps its narrowing.
+	hadDefault := c.providerAvailable(ProviderDefault)
 	prov := C.OSSL_PROVIDER_load(c.ptr(), cname)
 	if prov == nil {
-		return nil, newError("OSSL_PROVIDER_load(" + name + ")")
+		err := newError("OSSL_PROVIDER_load(" + string(name) + ")")
+		if hadDefault && !c.providerAvailable(ProviderDefault) {
+			cdef := C.CString(string(ProviderDefault))
+			defer C.free(unsafe.Pointer(cdef))
+			// retain_fallbacks here so restoring does not itself disable
+			// anything further.
+			if p := C.OSSL_PROVIDER_try_load(c.ptr(), cdef, 1); p != nil {
+				C.OSSL_PROVIDER_unload(p)
+			}
+			clearErrors()
+		}
+		return nil, err
 	}
 	return &Provider{prov: prov}, nil
 }
@@ -104,11 +132,15 @@ func (p *Provider) Unload() error {
 
 // ProviderAvailable reports whether a provider by that name is currently
 // active in this context, without loading it.
-func (c *Context) ProviderAvailable(name string) bool {
+func (c *Context) ProviderAvailable(name ProviderName) bool {
 	if c == nil {
 		return false
 	}
-	cname := C.CString(name)
+	return c.providerAvailable(name)
+}
+
+func (c *Context) providerAvailable(name ProviderName) bool {
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 	return C.OSSL_PROVIDER_available(c.ptr(), cname) == 1
 }
@@ -156,20 +188,41 @@ func (c *Context) Providers() ([]ProviderInfo, error) {
 	return infos, nil
 }
 
+// KeyAlgorithmAvailable reports whether an asymmetric algorithm can be used
+// through this context, without generating a key.
+//
+// Key algorithms are not fetched like digests and ciphers; the check is
+// whether a key-management context can be constructed for the name, which is
+// what GenerateKey and every parser do first.
+func (c *Context) KeyAlgorithmAvailable(algorithm KeyAlgorithm) bool {
+	if c == nil || algorithm == "" {
+		return false
+	}
+	calg := C.CString(string(algorithm))
+	defer C.free(unsafe.Pointer(calg))
+	kctx := C.EVP_PKEY_CTX_new_from_name(c.ptr(), calg, nil)
+	ok := kctx != nil
+	if kctx != nil {
+		C.EVP_PKEY_CTX_free(kctx)
+	}
+	clearErrors()
+	return ok
+}
+
 // DigestAvailable reports whether a digest algorithm can be fetched through
 // this context, without constructing anything durable for the check. propq
 // is an optional property query overriding any default properties pinned on
 // the context via SetDefaultProperties; pass "" to use the context's own
 // default.
-func (c *Context) DigestAvailable(name, propq string) bool {
+func (c *Context) DigestAvailable(name DigestName, propq PropertyQuery) bool {
 	if c == nil {
 		return false
 	}
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 	var cq *C.char
 	if propq != "" {
-		cq = C.CString(propq)
+		cq = C.CString(string(propq))
 		defer C.free(unsafe.Pointer(cq))
 	}
 	md := C.EVP_MD_fetch(c.ptr(), cname, cq)
@@ -183,15 +236,15 @@ func (c *Context) DigestAvailable(name, propq string) bool {
 
 // CipherAvailable reports whether a symmetric cipher can be fetched through
 // this context. propq behaves as in DigestAvailable.
-func (c *Context) CipherAvailable(name, propq string) bool {
+func (c *Context) CipherAvailable(name CipherName, propq PropertyQuery) bool {
 	if c == nil {
 		return false
 	}
-	cname := C.CString(name)
+	cname := C.CString(string(name))
 	defer C.free(unsafe.Pointer(cname))
 	var cq *C.char
 	if propq != "" {
-		cq = C.CString(propq)
+		cq = C.CString(string(propq))
 		defer C.free(unsafe.Pointer(cq))
 	}
 	cipher := C.EVP_CIPHER_fetch(c.ptr(), cname, cq)

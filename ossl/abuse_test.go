@@ -4,6 +4,9 @@ package ossl
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -348,7 +351,7 @@ func TestAbuseWrongSizes(t *testing.T) {
 // Options applied to every algorithm, including where they make no sense.
 func TestAbuseCrossAlgorithmOptions(t *testing.T) {
 	algs := []struct {
-		name string
+		name KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"RSA", nil},
@@ -392,21 +395,21 @@ func TestAbuseCrossAlgorithmOptions(t *testing.T) {
 			})
 		}
 		// Operations the algorithm has no business supporting.
-		mustNotPanic(t, a.name+" encrypt", func() { _, _ = k.Encrypt([]byte("m"), nil) })
-		mustNotPanic(t, a.name+" decrypt", func() { _, _ = k.Decrypt([]byte("cccccccc"), nil) })
-		mustNotPanic(t, a.name+" encapsulate", func() { _, _, _ = k.Encapsulate() })
-		mustNotPanic(t, a.name+" decapsulate", func() { _, _ = k.Decapsulate([]byte("cccccccc")) })
-		mustNotPanic(t, a.name+" derive-self", func() { _, _ = k.Derive(k, nil) })
-		mustNotPanic(t, a.name+" marshalSEC1", func() { _, _ = k.MarshalSEC1() })
-		mustNotPanic(t, a.name+" marshalRaw", func() { _, _ = k.MarshalRawPrivateKey() })
-		mustNotPanic(t, a.name+" public", func() { _, _ = k.Public() })
+		mustNotPanic(t, string(a.name)+" encrypt", func() { _, _ = k.Encrypt([]byte("m"), nil) })
+		mustNotPanic(t, string(a.name)+" decrypt", func() { _, _ = k.Decrypt([]byte("cccccccc"), nil) })
+		mustNotPanic(t, string(a.name)+" encapsulate", func() { _, _, _ = k.Encapsulate() })
+		mustNotPanic(t, string(a.name)+" decapsulate", func() { _, _ = k.Decapsulate([]byte("cccccccc")) })
+		mustNotPanic(t, string(a.name)+" derive-self", func() { _, _ = k.Derive(k, nil) })
+		mustNotPanic(t, string(a.name)+" marshalSEC1", func() { _, _ = k.MarshalSEC1() })
+		mustNotPanic(t, string(a.name)+" marshalRaw", func() { _, _ = k.MarshalRawPrivateKey() })
+		mustNotPanic(t, string(a.name)+" public", func() { _, _ = k.Public() })
 		k.Close()
 	}
 }
 
 // AEAD option combinations, including ones that must be rejected.
 func TestAbuseAEADConstruction(t *testing.T) {
-	names := []string{"AES-256-GCM", "AES-256-CCM", "ChaCha20-Poly1305", "AES-256-OCB", "AES-256-CBC", "NOPE"}
+	names := []CipherName{"AES-256-GCM", "AES-256-CCM", "ChaCha20-Poly1305", "AES-256-OCB", "AES-256-CBC", "NOPE"}
 	sizes := []int{-1, 0, 1, 7, 12, 16, 17, 1 << 20}
 
 	for _, n := range names {
@@ -490,4 +493,49 @@ func TestAbuseCostAndSizeParametersAreBounded(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A failed provider load must not take the context's existing algorithms
+// down with it.
+//
+// OSSL_PROVIDER_load turns off a context's implicit fallback to the default
+// provider, and does so even when the load fails. On a context that had not
+// yet activated anything -- which Default has not, until its first
+// successful fetch -- one failed load left every later fetch returning
+// "unsupported" for the life of the process. It surfaced as most of this
+// suite failing depending on Go's randomised map iteration order, because
+// whether anything had fetched first decided whether the damage was visible.
+//
+// This runs in a subprocess so the probe happens before any other test has
+// warmed the global context, which is the only state in which the bug
+// reproduces.
+func TestFailedProviderLoadDoesNotKillTheContext(t *testing.T) {
+	if os.Getenv("OSSL_PROVIDER_POISON_CHILD") == "1" {
+		// Deliberately first: no successful fetch has run yet.
+		if _, err := Default.LoadProvider("no-such-provider"); err == nil {
+			t.Log("RESULT: load-unexpectedly-succeeded")
+			return
+		}
+		if _, err := Digest(SHA256, []byte("x")); err != nil {
+			t.Logf("RESULT: context-killed (%v)", err)
+		} else {
+			t.Log("RESULT: context-survived")
+		}
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestFailedProviderLoadDoesNotKillTheContext", "-test.v")
+	cmd.Env = append(os.Environ(), "OSSL_PROVIDER_POISON_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("subprocess failed: %v\n%s", err, out)
+	}
+	got := string(out)
+	switch {
+	case strings.Contains(got, "RESULT: context-survived"):
+	case strings.Contains(got, "RESULT: context-killed"):
+		t.Error("a failed provider load disabled the default provider for the whole process")
+	default:
+		t.Fatalf("subprocess produced no usable RESULT marker:\n%s", got)
+	}
 }

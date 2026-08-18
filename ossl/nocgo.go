@@ -49,11 +49,11 @@ var Default = &Context{}
 func NewContext() (*Context, error)                      { return nil, ErrUnavailable }
 func NewFIPSContext(configPath string) (*Context, error) { return nil, ErrUnavailable }
 
-func (c *Context) Close() error                            { return nil }
-func (c *Context) SetDefaultProperties(propq string) error { return ErrUnavailable }
-func (c *Context) LoadConfig(path string) error            { return ErrUnavailable }
-func (c *Context) EnableFIPS(configPath string) error      { return ErrUnavailable }
-func (c *Context) FIPSEnabled() bool                       { return false }
+func (c *Context) Close() error                                   { return nil }
+func (c *Context) SetDefaultProperties(propq PropertyQuery) error { return ErrUnavailable }
+func (c *Context) LoadConfig(path string) error                   { return ErrUnavailable }
+func (c *Context) EnableFIPS(configPath string) error             { return ErrUnavailable }
+func (c *Context) FIPSEnabled() bool                              { return false }
 
 // --- providers -------------------------------------------------------------
 
@@ -65,11 +65,11 @@ type ProviderInfo struct {
 	Active  bool
 }
 
-func (c *Context) LoadProvider(name string) (*Provider, error) { return nil, ErrUnavailable }
-func (c *Context) ProviderAvailable(name string) bool          { return false }
-func (c *Context) Providers() ([]ProviderInfo, error)          { return nil, ErrUnavailable }
-func (c *Context) DigestAvailable(name, propq string) bool     { return false }
-func (c *Context) CipherAvailable(name, propq string) bool     { return false }
+func (c *Context) LoadProvider(name ProviderName) (*Provider, error)         { return nil, ErrUnavailable }
+func (c *Context) ProviderAvailable(name ProviderName) bool                  { return false }
+func (c *Context) Providers() ([]ProviderInfo, error)                        { return nil, ErrUnavailable }
+func (c *Context) DigestAvailable(name DigestName, propq PropertyQuery) bool { return false }
+func (c *Context) CipherAvailable(name CipherName, propq PropertyQuery) bool { return false }
 
 func (p *Provider) Unload() error   { return nil }
 func (p *Provider) SelfTest() error { return ErrUnavailable }
@@ -80,7 +80,7 @@ type Hash struct{}
 
 var _ hash.Hash = (*Hash)(nil)
 
-func (c *Context) NewHash(name string) (*Hash, error) { return nil, ErrUnavailable }
+func (c *Context) NewHash(name DigestName) (*Hash, error) { return nil, ErrUnavailable }
 
 func (h *Hash) Write(p []byte) (int, error)  { return 0, ErrUnavailable }
 func (h *Hash) Sum(b []byte) []byte          { return b }
@@ -88,13 +88,13 @@ func (h *Hash) SumXOF(n int) ([]byte, error) { return nil, ErrUnavailable }
 func (h *Hash) Reset()                       {}
 func (h *Hash) Size() int                    { return 0 }
 func (h *Hash) BlockSize() int               { return 0 }
-func (h *Hash) Name() string                 { return "" }
+func (h *Hash) Name() DigestName             { return "" }
 func (h *Hash) IsXOF() bool                  { return false }
 func (h *Hash) Err() error                   { return ErrUnavailable }
 func (h *Hash) Close() error                 { return nil }
 
-func Digest(name string, data []byte) ([]byte, error)           { return nil, ErrUnavailable }
-func DigestXOF(name string, data []byte, n int) ([]byte, error) { return nil, ErrUnavailable }
+func Digest(name DigestName, data []byte) ([]byte, error)           { return nil, ErrUnavailable }
+func DigestXOF(name DigestName, data []byte, n int) ([]byte, error) { return nil, ErrUnavailable }
 
 // --- MACs ------------------------------------------------------------------
 
@@ -102,8 +102,8 @@ type MAC struct{}
 
 var _ hash.Hash = (*MAC)(nil)
 
-func (c *Context) NewHMAC(digest string, key []byte) (*MAC, error) { return nil, ErrUnavailable }
-func (c *Context) NewCMAC(cipher string, key []byte) (*MAC, error) { return nil, ErrUnavailable }
+func (c *Context) NewHMAC(digest DigestName, key []byte) (*MAC, error) { return nil, ErrUnavailable }
+func (c *Context) NewCMAC(cipher CipherName, key []byte) (*MAC, error) { return nil, ErrUnavailable }
 func (c *Context) NewKMAC(bits int, key []byte, outLen int, custom []byte) (*MAC, error) {
 	return nil, ErrUnavailable
 }
@@ -116,7 +116,7 @@ func (m *MAC) BlockSize() int              { return 0 }
 func (m *MAC) Err() error                  { return ErrUnavailable }
 func (m *MAC) Close() error                { return nil }
 
-func HMACSum(digest string, key, data []byte) ([]byte, error) { return nil, ErrUnavailable }
+func HMACSum(digest DigestName, key, data []byte) ([]byte, error) { return nil, ErrUnavailable }
 
 // EqualMAC is constant-time slice comparison and needs no C, so it keeps
 // working: a caller comparing tags must not silently fall back to a
@@ -134,7 +134,7 @@ func EqualMAC(a, b []byte) bool {
 
 // --- KDFs ------------------------------------------------------------------
 
-type KDFParams map[string]any
+type KDFParams map[ParamKey]any
 
 type Argon2idParams struct {
 	Iterations     uint
@@ -144,16 +144,16 @@ type Argon2idParams struct {
 	Secret         []byte
 }
 
-func (c *Context) DeriveKDF(name string, kp KDFParams, n int) ([]byte, error) {
+func (c *Context) DeriveKDF(name KDFName, kp KDFParams, n int) ([]byte, error) {
 	return nil, ErrUnavailable
 }
-func (c *Context) HKDF(digest string, secret, salt, info []byte, n int) ([]byte, error) {
+func (c *Context) HKDF(digest DigestName, secret, salt, info []byte, n int) ([]byte, error) {
 	return nil, ErrUnavailable
 }
-func (c *Context) HKDFExpand(digest string, prk, info []byte, n int) ([]byte, error) {
+func (c *Context) HKDFExpand(digest DigestName, prk, info []byte, n int) ([]byte, error) {
 	return nil, ErrUnavailable
 }
-func (c *Context) PBKDF2(digest string, password, salt []byte, iterations, n int) ([]byte, error) {
+func (c *Context) PBKDF2(digest DigestName, password, salt []byte, iterations, n int) ([]byte, error) {
 	return nil, ErrUnavailable
 }
 func (c *Context) Argon2id(password, salt []byte, ap Argon2idParams, n int) ([]byte, error) {
@@ -176,13 +176,13 @@ type AEADOption func(*aeadConfig)
 func WithIVSize(n int) AEADOption  { return func(c *aeadConfig) { c.ivLen = n } }
 func WithTagSize(n int) AEADOption { return func(c *aeadConfig) { c.tagLen = n } }
 
-func (c *Context) NewAEAD(name string, key []byte, opts ...AEADOption) (*AEAD, error) {
+func (c *Context) NewAEAD(name CipherName, key []byte, opts ...AEADOption) (*AEAD, error) {
 	return nil, ErrUnavailable
 }
 
-func (a *AEAD) NonceSize() int { return 0 }
-func (a *AEAD) Overhead() int  { return 0 }
-func (a *AEAD) Name() string   { return "" }
+func (a *AEAD) NonceSize() int   { return 0 }
+func (a *AEAD) Overhead() int    { return 0 }
+func (a *AEAD) Name() CipherName { return "" }
 func (a *AEAD) Seal(dst, nonce, plaintext, aad []byte) []byte {
 	panic(ErrUnavailable)
 }
@@ -204,15 +204,15 @@ type params struct{}
 
 type KeyOption func(*params)
 
-func WithRSABits(bits int) KeyOption            { return func(*params) {} }
-func WithGroup(name string) KeyOption           { return func(*params) {} }
-func WithParam(key string, value any) KeyOption { return func(*params) {} }
+func WithRSABits(bits int) KeyOption              { return func(*params) {} }
+func WithGroup(name Curve) KeyOption              { return func(*params) {} }
+func WithParam(key ParamKey, value any) KeyOption { return func(*params) {} }
 
-func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error) {
+func (c *Context) GenerateKey(algorithm KeyAlgorithm, opts ...KeyOption) (*Key, error) {
 	return nil, ErrUnavailable
 }
 
-func (k *Key) Type() string          { return "" }
+func (k *Key) Type() KeyAlgorithm    { return "" }
 func (k *Key) Bits() int             { return 0 }
 func (k *Key) SecurityBits() int     { return 0 }
 func (k *Key) Size() int             { return 0 }
@@ -234,10 +234,10 @@ func (c *Context) ParseSEC1PrivateKey(der []byte) (*Key, error)          { retur
 func (c *Context) ParseSEC1PrivateKeyPEM(pemBytes []byte) (*Key, error)  { return nil, ErrUnavailable }
 func (c *Context) ParseSPKIPublicKey(der []byte) (*Key, error)           { return nil, ErrUnavailable }
 func (c *Context) ParseSPKIPublicKeyPEM(pemBytes []byte) (*Key, error)   { return nil, ErrUnavailable }
-func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error) {
+func (c *Context) ParseRawPrivateKey(algorithm KeyAlgorithm, raw []byte) (*Key, error) {
 	return nil, ErrUnavailable
 }
-func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) {
+func (c *Context) ParseRawPublicKey(algorithm KeyAlgorithm, raw []byte) (*Key, error) {
 	return nil, ErrUnavailable
 }
 
@@ -258,12 +258,12 @@ const (
 )
 
 type SignOptions struct {
-	Digest        string
+	Digest        DigestName
 	Context       []byte
 	Prehash       bool
 	Padding       RSAPadding
 	PSSSaltLen    PSSSaltLength
-	MGF1Hash      string
+	MGF1Hash      DigestName
 	Format        SignatureFormat
 	Deterministic bool
 }
@@ -279,19 +279,19 @@ func NewVerifier(k *Key, opts *SignOptions) (*Verifier, error) { return nil, Err
 
 func (s *Signer) Write(p []byte) (int, error) { return 0, ErrUnavailable }
 func (s *Signer) Sign() ([]byte, error)       { return nil, ErrUnavailable }
-func (s *Signer) Name() string                { return "" }
+func (s *Signer) Name() KeyAlgorithm          { return "" }
 func (s *Signer) Close() error                { return nil }
 
 func (v *Verifier) Write(p []byte) (int, error) { return 0, ErrUnavailable }
 func (v *Verifier) Verify(sig []byte) error     { return ErrUnavailable }
-func (v *Verifier) Name() string                { return "" }
+func (v *Verifier) Name() KeyAlgorithm          { return "" }
 func (v *Verifier) Close() error                { return nil }
 
 // --- asymmetric encryption, KEM, key agreement -----------------------------
 
 type OAEPOptions struct {
-	Hash     string
-	MGF1Hash string
+	Hash     DigestName
+	MGF1Hash DigestName
 	Label    []byte
 }
 
@@ -410,13 +410,13 @@ func WithCipherIVSize(n int) CipherOption {
 	return func(c *cipherConfig) { c.ivLen = n; c.ivSet = true }
 }
 
-func (c *Context) NewCipher(name string, key []byte, opts ...CipherOption) (*Cipher, error) {
+func (c *Context) NewCipher(name CipherName, key []byte, opts ...CipherOption) (*Cipher, error) {
 	return nil, ErrUnavailable
 }
 
 func (x *Cipher) IVSize() int            { return 0 }
 func (x *Cipher) BlockSize() int         { return 0 }
-func (x *Cipher) Name() string           { return "" }
+func (x *Cipher) Name() CipherName       { return "" }
 func (x *Cipher) Padding() PaddingScheme { return PaddingPKCS7 }
 func (x *Cipher) Encrypt(dst, iv, plaintext []byte) ([]byte, error) {
 	return nil, ErrUnavailable
@@ -431,7 +431,7 @@ type KeyWrap struct{}
 func (c *Context) NewKeyWrap(kek []byte, withPadding bool) (*KeyWrap, error) {
 	return nil, ErrUnavailable
 }
-func (w *KeyWrap) Name() string                            { return "" }
+func (w *KeyWrap) Name() CipherName                        { return "" }
 func (w *KeyWrap) Wrap(keyMaterial []byte) ([]byte, error) { return nil, ErrUnavailable }
 func (w *KeyWrap) Unwrap(wrapped []byte) ([]byte, error)   { return nil, ErrUnavailable }
 func (w *KeyWrap) Close() error                            { return nil }
@@ -439,17 +439,17 @@ func (w *KeyWrap) Close() error                            { return nil }
 // --- generic MAC ------------------------------------------------------------
 
 type MACParams struct {
-	Digest string
-	Cipher string
+	Digest DigestName
+	Cipher CipherName
 	IV     []byte
 	Custom []byte
 	Size   int
 }
 
-func (c *Context) NewMAC(algorithm string, key []byte, p *MACParams) (*MAC, error) {
+func (c *Context) NewMAC(algorithm MACName, key []byte, p *MACParams) (*MAC, error) {
 	return nil, ErrUnavailable
 }
-func (c *Context) NewGMAC(cipher string, key, iv []byte) (*MAC, error) {
+func (c *Context) NewGMAC(cipher CipherName, key, iv []byte) (*MAC, error) {
 	return nil, ErrUnavailable
 }
 
@@ -494,3 +494,5 @@ func (c *Context) ParsePKCS1PrivateKey(der []byte) (*Key, error) { return nil, E
 func (c *Context) ParsePKCS1PrivateKeyPEM(pemBytes []byte) (*Key, error) {
 	return nil, ErrUnavailable
 }
+
+func (c *Context) KeyAlgorithmAvailable(algorithm KeyAlgorithm) bool { return false }

@@ -40,23 +40,23 @@ func WithRSABits(bits int) KeyOption {
 }
 
 // WithGroup sets the elliptic curve group, e.g. "P-256", "P-384", "P-521".
-func WithGroup(name string) KeyOption {
-	return func(p *params) { p.UTF8(pKeyGroupName, name) }
+func WithGroup(name Curve) KeyOption {
+	return func(p *params) { p.UTF8(pKeyGroupName, string(name)) }
 }
 
 // WithParam sets an arbitrary generation parameter, for algorithms this
 // package has no named option for.
-func WithParam(key string, value any) KeyOption {
+func WithParam(key ParamKey, value any) KeyOption {
 	return func(p *params) {
 		switch t := value.(type) {
 		case string:
-			p.UTF8(key, t)
+			p.UTF8(string(key), t)
 		case []byte:
-			p.Octets(key, t)
+			p.Octets(string(key), t)
 		case int:
-			p.Int(key, t)
+			p.Int(string(key), t)
 		case uint:
-			p.UInt(key, t)
+			p.UInt(string(key), t)
 		}
 	}
 }
@@ -72,17 +72,17 @@ func WithParam(key string, value any) KeyOption {
 //
 // The post-quantum algorithms take no options: the parameter set is part of
 // the name.
-func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error) {
+func (c *Context) GenerateKey(algorithm KeyAlgorithm, opts ...KeyOption) (*Key, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
 	clearErrors()
-	calg := C.CString(algorithm)
+	calg := C.CString(string(algorithm))
 	defer C.free(unsafe.Pointer(calg))
 
 	ctx := C.EVP_PKEY_CTX_new_from_name(c.ptr(), calg, nil)
 	if ctx == nil {
-		return nil, newError("EVP_PKEY_CTX_new_from_name(" + algorithm + ")")
+		return nil, newError("EVP_PKEY_CTX_new_from_name(" + string(algorithm) + ")")
 	}
 	defer C.EVP_PKEY_CTX_free(ctx)
 
@@ -104,17 +104,17 @@ func (c *Context) GenerateKey(algorithm string, opts ...KeyOption) (*Key, error)
 
 	var pkey *C.EVP_PKEY
 	if C.EVP_PKEY_generate(ctx, &pkey) <= 0 {
-		return nil, newError("EVP_PKEY_generate(" + algorithm + ")")
+		return nil, newError("EVP_PKEY_generate(" + string(algorithm) + ")")
 	}
 	return &Key{pkey: pkey, ctx: c}, nil
 }
 
 // Type reports the key's algorithm name, e.g. "RSA", "EC", "ML-DSA-65".
-func (k *Key) Type() string {
+func (k *Key) Type() KeyAlgorithm {
 	if k == nil || k.pkey == nil {
 		return ""
 	}
-	return C.GoString(C.EVP_PKEY_get0_type_name(k.pkey))
+	return KeyAlgorithm(C.GoString(C.EVP_PKEY_get0_type_name(k.pkey)))
 }
 
 // Bits is the key size in bits. It is NOT comparable across algorithm
@@ -165,7 +165,7 @@ func (k *Key) Close() error {
 // an unrelated algorithm whose name merely starts with those two letters is
 // not swept in.
 func (k *Key) oneShotOnly() bool {
-	t := strings.ToUpper(k.Type())
+	t := strings.ToUpper(string(k.Type()))
 	return strings.HasPrefix(t, "ED25519") ||
 		strings.HasPrefix(t, "ED448") ||
 		strings.HasPrefix(t, "ML-DSA") ||
@@ -183,12 +183,12 @@ func (k *Key) oneShotOnly() bool {
 // digest produced it, so a verifier that hardcodes one while the signer took
 // this default will fail to verify across key sizes. Pass SignOptions.Digest
 // explicitly wherever both sides are not built from this same policy.
-func (k *Key) defaultDigest() string {
+func (k *Key) defaultDigest() DigestName {
 	if k.oneShotOnly() {
 		return ""
 	}
 	if k.SecurityBits() >= 192 {
-		return "SHA2-384"
+		return SHA384
 	}
-	return "SHA2-256"
+	return SHA256
 }

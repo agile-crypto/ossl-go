@@ -140,7 +140,7 @@ func (k *Key) MarshalRawPrivateKey() ([]byte, error) {
 	clearErrors()
 	var n C.size_t
 	if C.EVP_PKEY_get_raw_private_key(k.pkey, nil, &n) != 1 {
-		return nil, newError("EVP_PKEY_get_raw_private_key: no raw encoding for " + k.Type())
+		return nil, newError("EVP_PKEY_get_raw_private_key: no raw encoding for " + string(k.Type()))
 	}
 	if n == 0 {
 		return []byte{}, nil
@@ -161,7 +161,7 @@ func (k *Key) MarshalRawPublicKey() ([]byte, error) {
 	clearErrors()
 	var n C.size_t
 	if C.EVP_PKEY_get_raw_public_key(k.pkey, nil, &n) != 1 {
-		return nil, newError("EVP_PKEY_get_raw_public_key: no raw encoding for " + k.Type())
+		return nil, newError("EVP_PKEY_get_raw_public_key: no raw encoding for " + string(k.Type()))
 	}
 	if n == 0 {
 		return []byte{}, nil
@@ -247,7 +247,7 @@ func (c *Context) ParseSPKIPublicKeyPEM(pemBytes []byte) (*Key, error) {
 
 // ParseRawPrivateKey builds a key from algorithm-native private key bytes.
 // algorithm selects the key type, e.g. "X25519", "ED25519", "ML-KEM-768".
-func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error) {
+func (c *Context) ParseRawPrivateKey(algorithm KeyAlgorithm, raw []byte) (*Key, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
@@ -255,18 +255,18 @@ func (c *Context) ParseRawPrivateKey(algorithm string, raw []byte) (*Key, error)
 		return nil, fmt.Errorf("ossl: empty raw key input")
 	}
 	clearErrors()
-	kt := C.CString(algorithm)
+	kt := C.CString(string(algorithm))
 	defer C.free(unsafe.Pointer(kt))
 	pkey := C.EVP_PKEY_new_raw_private_key_ex(c.ptr(), kt, nil,
 		(*C.uchar)(unsafe.Pointer(&raw[0])), C.size_t(len(raw)))
 	if pkey == nil {
-		return nil, newError("EVP_PKEY_new_raw_private_key_ex(" + algorithm + ")")
+		return nil, newError("EVP_PKEY_new_raw_private_key_ex(" + string(algorithm) + ")")
 	}
 	return &Key{pkey: pkey, ctx: c}, nil
 }
 
 // ParseRawPublicKey builds a key from algorithm-native public key bytes.
-func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) {
+func (c *Context) ParseRawPublicKey(algorithm KeyAlgorithm, raw []byte) (*Key, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
@@ -274,12 +274,12 @@ func (c *Context) ParseRawPublicKey(algorithm string, raw []byte) (*Key, error) 
 		return nil, fmt.Errorf("ossl: empty raw key input")
 	}
 	clearErrors()
-	kt := C.CString(algorithm)
+	kt := C.CString(string(algorithm))
 	defer C.free(unsafe.Pointer(kt))
 	pkey := C.EVP_PKEY_new_raw_public_key_ex(c.ptr(), kt, nil,
 		(*C.uchar)(unsafe.Pointer(&raw[0])), C.size_t(len(raw)))
 	if pkey == nil {
-		return nil, newError("EVP_PKEY_new_raw_public_key_ex(" + algorithm + ")")
+		return nil, newError("EVP_PKEY_new_raw_public_key_ex(" + string(algorithm) + ")")
 	}
 	return &Key{pkey: pkey, ctx: c}, nil
 }

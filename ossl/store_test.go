@@ -20,8 +20,8 @@ func writePEM(t *testing.T, dir, name string, b []byte) string {
 
 func TestLoadKeyFromFileURI(t *testing.T) {
 	dir := t.TempDir()
-	for _, alg := range []string{"RSA", "EC", "ED25519"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"RSA", "EC", "ED25519"} {
+		t.Run(string(alg), func(t *testing.T) {
 			var opts []KeyOption
 			if alg == "EC" {
 				opts = []KeyOption{WithGroup("P-256")}
@@ -36,7 +36,7 @@ func TestLoadKeyFromFileURI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := writePEM(t, dir, alg+"-priv.pem", privPEM)
+			path := writePEM(t, dir, string(alg)+"-priv.pem", privPEM)
 
 			loaded, err := Default.LoadKey("file:" + path)
 			if err != nil {

@@ -80,7 +80,7 @@ func ExampleContext_NewAEAD() {
 // The same code signs with a classical or a post-quantum key; only the
 // algorithm name changes.
 func ExampleKey_Sign() {
-	for _, alg := range []string{"ED25519", "ML-DSA-65"} {
+	for _, alg := range []ossl.KeyAlgorithm{"ED25519", "ML-DSA-65"} {
 		key, err := ossl.Default.GenerateKey(alg)
 		if err != nil {
 			log.Fatal(err)

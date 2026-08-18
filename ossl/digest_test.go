@@ -14,7 +14,7 @@ import (
 // and this OpenSSL build's own `openssl dgst`, not transcribed from memory).
 func TestDigestKAT(t *testing.T) {
 	cases := []struct {
-		name string
+		name DigestName
 		want string
 	}{
 		{"SHA2-256", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
@@ -22,7 +22,7 @@ func TestDigestKAT(t *testing.T) {
 		{"SHA3-256", "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(string(c.name), func(t *testing.T) {
 			got, err := Digest(c.name, []byte("abc"))
 			if err != nil {
 				t.Fatalf("Digest(%s): %v", c.name, err)

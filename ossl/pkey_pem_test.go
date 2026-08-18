@@ -9,8 +9,8 @@ import (
 )
 
 func TestPKCS8RoundTrip(t *testing.T) {
-	for _, alg := range []string{"RSA", "EC", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"RSA", "EC", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
+		t.Run(string(alg), func(t *testing.T) {
 			var opts []KeyOption
 			if alg == "EC" {
 				opts = []KeyOption{WithGroup("P-256")}
@@ -122,8 +122,8 @@ func TestParseSEC1PrivateKeyRejectsRSA(t *testing.T) {
 }
 
 func TestSPKIRoundTrip(t *testing.T) {
-	for _, alg := range []string{"RSA", "EC", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"RSA", "EC", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
+		t.Run(string(alg), func(t *testing.T) {
 			var opts []KeyOption
 			if alg == "EC" {
 				opts = []KeyOption{WithGroup("P-256")}
@@ -180,8 +180,8 @@ func TestSPKIRejectsPKCS8Input(t *testing.T) {
 }
 
 func TestRawKeyRoundTrip(t *testing.T) {
-	for _, alg := range []string{"X25519", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"X25519", "ED25519", "ML-KEM-768", "ML-DSA-65"} {
+		t.Run(string(alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(alg)
 			if err != nil {
 				t.Fatal(err)

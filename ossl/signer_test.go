@@ -12,13 +12,13 @@ import (
 
 func TestSignerRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
-		alg  string
+		alg  KeyAlgorithm
 		opts []KeyOption
 	}{
 		{"RSA", nil},
 		{"EC", []KeyOption{WithGroup("P-256")}},
 	} {
-		t.Run(tc.alg, func(t *testing.T) {
+		t.Run(string(tc.alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(tc.alg, tc.opts...)
 			if err != nil {
 				t.Fatal(err)
@@ -219,8 +219,8 @@ func TestVerifierRejectsEmptySignature(t *testing.T) {
 // than failing somewhere inside a later Write once the caller has already
 // pushed data through.
 func TestStreamingRefusedForOneShotOnlyAlgorithms(t *testing.T) {
-	for _, alg := range []string{"ED25519", "ED448", "ML-DSA-65", "SLH-DSA-SHA2-128s"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []KeyAlgorithm{"ED25519", "ED448", "ML-DSA-65", "SLH-DSA-SHA2-128s"} {
+		t.Run(string(alg), func(t *testing.T) {
 			k, err := Default.GenerateKey(alg)
 			if err != nil {
 				t.Fatal(err)

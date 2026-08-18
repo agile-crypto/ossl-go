@@ -63,12 +63,12 @@ func NewContext() (*Context, error) {
 // as EVP_set_default_properties(NULL, ...) does in the C API -- which is
 // precisely the shared-state hazard Context exists to let callers avoid by
 // using a context of their own instead.
-func (c *Context) SetDefaultProperties(propq string) error {
+func (c *Context) SetDefaultProperties(propq PropertyQuery) error {
 	if c == nil {
 		return ErrClosed
 	}
 	clearErrors()
-	cq := C.CString(propq)
+	cq := C.CString(string(propq))
 	defer C.free(unsafe.Pointer(cq))
 	if C.EVP_set_default_properties(c.ptr(), cq) != 1 {
 		return newError("EVP_set_default_properties")

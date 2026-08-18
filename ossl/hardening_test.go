@@ -15,7 +15,7 @@ import (
 // unchanged -- so Digest handed back an empty slice with a nil error, and
 // every SHAKE digest compared equal to every other one.
 func TestDigestRejectsXOF(t *testing.T) {
-	for _, name := range []string{"SHAKE-128", "SHAKE-256"} {
+	for _, name := range []DigestName{"SHAKE-128", "SHAKE-256"} {
 		out, err := Digest(name, []byte("abc"))
 		if err == nil {
 			t.Fatalf("Digest(%s) returned %d bytes and a nil error; want an error directing the caller to DigestXOF", name, len(out))
@@ -279,7 +279,7 @@ func TestSignOptionsRejectsInapplicableOptions(t *testing.T) {
 		{"unknown negative salt length", rsa, &SignOptions{PSSSaltLen: -7}},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(string(c.name), func(t *testing.T) {
 			if _, err := c.key.Sign([]byte("m"), c.opts); err == nil {
 				t.Error("Sign accepted an option the algorithm cannot honour")
 			}

@@ -36,7 +36,7 @@ import (
 type Signer struct {
 	mdctx *C.EVP_MD_CTX
 	pkey  *C.EVP_PKEY
-	name  string
+	name  KeyAlgorithm
 	done  bool
 }
 
@@ -50,7 +50,7 @@ var _ io.Writer = (*Signer)(nil)
 type Verifier struct {
 	mdctx *C.EVP_MD_CTX
 	pkey  *C.EVP_PKEY
-	name  string
+	name  KeyAlgorithm
 	done  bool
 }
 
@@ -98,7 +98,7 @@ func streamInit(k *Key, opts *SignOptions, verify bool) (*C.EVP_MD_CTX, *C.EVP_P
 
 	var cd *C.char
 	if o.Digest != "" {
-		cd = C.CString(o.Digest)
+		cd = C.CString(string(o.Digest))
 		defer C.free(unsafe.Pointer(cd))
 	}
 
@@ -143,7 +143,7 @@ func NewVerifier(k *Key, opts *SignOptions) (*Verifier, error) {
 }
 
 // Name reports the key algorithm this signer was built for.
-func (s *Signer) Name() string {
+func (s *Signer) Name() KeyAlgorithm {
 	if s == nil {
 		return ""
 	}
@@ -151,7 +151,7 @@ func (s *Signer) Name() string {
 }
 
 // Name reports the key algorithm this verifier was built for.
-func (v *Verifier) Name() string {
+func (v *Verifier) Name() KeyAlgorithm {
 	if v == nil {
 		return ""
 	}

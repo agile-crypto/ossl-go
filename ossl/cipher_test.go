@@ -8,8 +8,8 @@ import (
 )
 
 func TestAEADRoundTrip(t *testing.T) {
-	for _, alg := range []string{"AES-256-GCM", "ChaCha20-Poly1305"} {
-		t.Run(alg, func(t *testing.T) {
+	for _, alg := range []CipherName{"AES-256-GCM", "ChaCha20-Poly1305"} {
+		t.Run(string(alg), func(t *testing.T) {
 			key := bytes.Repeat([]byte{0x11}, 32)
 			aead, err := Default.NewAEAD(alg, key)
 			if err != nil {

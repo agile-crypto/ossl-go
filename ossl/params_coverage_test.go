@@ -16,7 +16,7 @@ import (
 
 func TestSymmetricCipherModesAndPadding(t *testing.T) {
 	k := bytes.Repeat([]byte{1}, 32)
-	for _, name := range []string{"AES-256-CBC", "AES-256-CTR", "AES-256-OFB", "AES-256-CFB", "ChaCha20"} {
+	for _, name := range []CipherName{"AES-256-CBC", "AES-256-CTR", "AES-256-OFB", "AES-256-CFB", "ChaCha20"} {
 		for _, pad := range []PaddingScheme{PaddingPKCS7, PaddingNone, PaddingISO7816, PaddingX923, PaddingZero} {
 			c, err := Default.NewCipher(name, k, WithPadding(pad))
 			if err != nil {
@@ -121,7 +121,7 @@ func TestGenericMACAlgorithms(t *testing.T) {
 }
 
 func TestECDSASignatureFormats(t *testing.T) {
-	for _, curve := range []string{"P-256", "P-384", "P-521"} {
+	for _, curve := range []Curve{P256, P384, P521} {
 		k, err := Default.GenerateKey("EC", WithGroup(curve))
 		if err != nil {
 			t.Fatal(err)
@@ -231,7 +231,7 @@ func TestAlgorithmParameterCoverage(t *testing.T) {
 	t.Log("PSS MGF1Hash independent of Digest: ok")
 
 	// ML-DSA / SLH-DSA deterministic mode.
-	for _, alg := range []string{"ML-DSA-65", "SLH-DSA-SHA2-128s"} {
+	for _, alg := range []KeyAlgorithm{"ML-DSA-65", "SLH-DSA-SHA2-128s"} {
 		pk, err := Default.GenerateKey(alg)
 		if err != nil {
 			t.Fatal(err)

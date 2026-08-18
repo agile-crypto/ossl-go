@@ -81,7 +81,7 @@ func TestFIPSContextRestrictsAlgorithms(t *testing.T) {
 	}
 	defer c.Close()
 
-	for _, name := range []string{"SHA2-256", "SHA2-512", "SHA3-256"} {
+	for _, name := range []DigestName{"SHA2-256", "SHA2-512", "SHA3-256"} {
 		if !c.DigestAvailable(name, "") {
 			t.Errorf("%s should be available in a FIPS context", name)
 		}

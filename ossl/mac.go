@@ -34,19 +34,19 @@ type MAC struct {
 var _ hash.Hash = (*MAC)(nil)
 
 // newMAC is the single constructor the public ones funnel into.
-func (c *Context) newMAC(algorithm string, key []byte, p *params) (*MAC, error) {
+func (c *Context) newMAC(algorithm MACName, key []byte, p *params) (*MAC, error) {
 	if c == nil {
 		p.free()
 		return nil, ErrClosed
 	}
 	clearErrors()
-	calg := C.CString(algorithm)
+	calg := C.CString(string(algorithm))
 	defer C.free(unsafe.Pointer(calg))
 
 	m := C.EVP_MAC_fetch(c.ptr(), calg, nil)
 	if m == nil {
 		p.free()
-		return nil, newError("EVP_MAC_fetch(" + algorithm + ")")
+		return nil, newError("EVP_MAC_fetch(" + string(algorithm) + ")")
 	}
 	ctx := C.EVP_MAC_CTX_new(m)
 	if ctx == nil {
@@ -106,9 +106,9 @@ func (m *MAC) init() error {
 //	           must never be reused across messages
 type MACParams struct {
 	// Digest names the hash for digest-based MACs.
-	Digest string
+	Digest DigestName
 	// Cipher names the block cipher for cipher-based MACs.
-	Cipher string
+	Cipher CipherName
 	// IV is the nonce for GMAC.
 	IV []byte
 	// Custom is a customisation/personalisation string for KMAC and BLAKE2.
@@ -123,10 +123,10 @@ func (p *MACParams) build() *params {
 		return b
 	}
 	if p.Digest != "" {
-		b.UTF8(pKeyDigest, p.Digest)
+		b.UTF8(pKeyDigest, string(p.Digest))
 	}
 	if p.Cipher != "" {
-		b.UTF8(pKeyCipher, p.Cipher)
+		b.UTF8(pKeyCipher, string(p.Cipher))
 	}
 	if p.IV != nil {
 		b.Octets(pKeyIV, p.IV)
@@ -147,7 +147,7 @@ func (p *MACParams) build() *params {
 // The named constructors below cover the common cases; this is the way to
 // reach GMAC, Poly1305, SipHash and BLAKE2, none of which fit a
 // digest-or-cipher shaped helper.
-func (c *Context) NewMAC(algorithm string, key []byte, p *MACParams) (*MAC, error) {
+func (c *Context) NewMAC(algorithm MACName, key []byte, p *MACParams) (*MAC, error) {
 	if c == nil {
 		return nil, ErrClosed
 	}
@@ -166,7 +166,7 @@ func (c *Context) NewMAC(algorithm string, key []byte, p *MACParams) (*MAC, erro
 
 // NewGMAC returns a GMAC over the named cipher, e.g. "AES-256-GCM". The IV
 // must be unique for every message under a given key.
-func (c *Context) NewGMAC(cipher string, key, iv []byte) (*MAC, error) {
+func (c *Context) NewGMAC(cipher CipherName, key, iv []byte) (*MAC, error) {
 	if len(iv) == 0 {
 		return nil, fmt.Errorf("ossl: GMAC requires an IV")
 	}
@@ -174,23 +174,23 @@ func (c *Context) NewGMAC(cipher string, key, iv []byte) (*MAC, error) {
 }
 
 // NewHMAC returns an HMAC using the named digest, e.g. NewHMAC("SHA2-256", k).
-func (c *Context) NewHMAC(digest string, key []byte) (*MAC, error) {
-	p := newParams().UTF8(pKeyDigest, digest)
+func (c *Context) NewHMAC(digest DigestName, key []byte) (*MAC, error) {
+	p := newParams().UTF8(pKeyDigest, string(digest))
 	return c.newMAC("HMAC", key, p)
 }
 
 // NewCMAC returns a CMAC over the named block cipher, e.g. "AES-256-CBC".
-func (c *Context) NewCMAC(cipher string, key []byte) (*MAC, error) {
-	p := newParams().UTF8(pKeyCipher, cipher)
+func (c *Context) NewCMAC(cipher CipherName, key []byte) (*MAC, error) {
+	p := newParams().UTF8(pKeyCipher, string(cipher))
 	return c.newMAC("CMAC", key, p)
 }
 
 // NewKMAC returns a KMAC-128 or KMAC-256 producing outLen bytes. custom is an
 // optional domain-separation string and may be nil.
 func (c *Context) NewKMAC(bits int, key []byte, outLen int, custom []byte) (*MAC, error) {
-	alg := "KMAC-128"
+	alg := KMAC128
 	if bits == 256 {
-		alg = "KMAC-256"
+		alg = KMAC256
 	}
 	p := newParams().SizeT(pKeySize, outLen)
 	if len(custom) > 0 {
@@ -304,7 +304,7 @@ func (m *MAC) Close() error {
 // As in Digest, Sum's latched error is collected explicitly: an unchecked
 // Sum can return an empty tag, and an empty tag compares equal to every
 // other empty tag.
-func HMACSum(digest string, key, data []byte) ([]byte, error) {
+func HMACSum(digest DigestName, key, data []byte) ([]byte, error) {
 	m, err := Default.NewHMAC(digest, key)
 	if err != nil {
 		return nil, err
