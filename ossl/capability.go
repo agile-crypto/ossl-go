@@ -32,8 +32,10 @@ import (
 // A caller pre-validating against a parts list would advertise all four and
 // fail at execution, which is the opposite of what pre-validation is for.
 type Capability interface {
-	// check applies structural rules and availability queries. No key
-	// generation, no cryptographic operation.
+	// check applies structural rules and availability queries. It performs
+	// no operation on caller data; the one thing it may generate is an
+	// ephemeral key to settle a question OpenSSL exposes no other way, and
+	// that answer is memoised on the Context. See curveUsable.
 	check(*Context) error
 	// trial performs the real operation on ephemeral material.
 	trial(*Context) error
@@ -45,9 +47,11 @@ type Capability interface {
 // returning nil if it can and an explanatory error if not.
 //
 // The check is structural: availability queries plus the same rules the
-// operation itself would apply. It generates no keys and performs no
-// cryptography, so it is cheap enough to run across a whole catalogue at
-// startup.
+// operation itself would apply. It runs no cryptography on caller data and
+// is cheap enough to sweep a whole catalogue at startup. The exception is an
+// EC curve, which costs one ephemeral key generation the first time this
+// context is asked about it and nothing on every later ask, because OpenSSL
+// provides no way to ask whether a curve is reachable without trying it.
 //
 // Structural checking cannot see a restriction that only appears when the
 // operation actually runs -- a provider that advertises an algorithm and
@@ -153,6 +157,13 @@ func (s SignatureCapability) check(c *Context) error {
 		}
 		if !ok {
 			return fmt.Errorf("ossl: curve %q is not built into this libcrypto", s.Curve)
+		}
+		// Being built into the library is not the same as being reachable
+		// through this context: the FIPS provider supplies the NIST prime
+		// curves and refuses secp256k1 and Brainpool, which libcrypto's
+		// built-in table knows nothing about. See curveUsable.
+		if err := c.curveUsable(s.Curve); err != nil {
+			return fmt.Errorf("ossl: curve %q is not usable in this context: %w", s.Curve, err)
 		}
 	}
 
@@ -335,4 +346,77 @@ func curveSupported(name Curve) (bool, error) {
 		return false, nil
 	}
 	return curveNIDs[nid], nil
+}
+
+// probe answers a question OpenSSL exposes no query for, by attempting the
+// thing once and remembering the outcome for this context. key identifies the
+// question; run performs it and returns nil if it worked.
+//
+// # Why this is not a provider capability query
+//
+// OSSL_PROVIDER_get_capabilities looks like the mechanism for this and is
+// not. It defines two categories, TLS-GROUP and TLS-SIGALG, and both describe
+// what a provider will negotiate in a TLS handshake rather than what it will
+// do when asked. Measured against this build:
+//
+//   - An unrestricted context generates keys on all 82 built-in curves, of
+//     which only 28 are TLS groups. Trusting the capability would refuse SM2,
+//     most of the Brainpool family and every binary curve.
+//   - The FIPS provider declares P-192, K-163 and B-163 as TLS groups, and
+//     EC key generation on all three fails.
+//
+// It is also provider-scoped where the question is context-scoped: a
+// capability cannot see the property query that decides which provider serves
+// a fetch, which is the same reason ListDigests confirms every enumerated
+// name with a real fetch rather than trusting the do_all_provided iterator.
+//
+// Algorithm *names* do have real queries -- fetching answers them exactly,
+// and that is what the rest of this file uses. Parameter *values* have none,
+// so attempting them is the only oracle. Memoising per context is what keeps
+// that affordable: the cost is bounded by the number of distinct questions
+// asked rather than by the number of templates checked, and a negative answer
+// is the cheap one, since an unusable parameter is rejected before the
+// expensive work starts.
+func (c *Context) probe(key string, run func() error) error {
+	c.mu.Lock()
+	err, seen := c.probes[key]
+	c.mu.Unlock()
+	if seen {
+		return err
+	}
+
+	// Run outside the lock. A concurrent caller asking the same question
+	// repeats the work, which is harmless and idempotent, where holding the
+	// lock across a P-521 generation would serialise every other capability
+	// check on this context behind it.
+	err = run()
+	if err != nil {
+		clearErrors()
+	}
+
+	c.mu.Lock()
+	if c.probes == nil {
+		c.probes = make(map[string]error)
+	}
+	c.probes[key] = err
+	c.mu.Unlock()
+	return err
+}
+
+// curveUsable reports whether this context can produce a key on the curve.
+//
+// Presence in libcrypto's built-in table is not enough: that table is a
+// compile-time property of the library, while which of it is reachable
+// depends on the loaded providers and the property query. Nothing short of
+// generating settles it -- setting the group on a keygen context succeeds for
+// any string at all, "nosuchcurve" included, because the name is not resolved
+// until generation.
+func (c *Context) curveUsable(name Curve) error {
+	return c.probe("curve:"+string(name), func() error {
+		k, err := c.GenerateKey(EC, WithGroup(name))
+		if err != nil {
+			return err
+		}
+		return k.Close()
+	})
 }

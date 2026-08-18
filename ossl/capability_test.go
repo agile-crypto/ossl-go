@@ -3,6 +3,7 @@
 package ossl
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -229,6 +230,129 @@ func TestCapabilityIsContextScoped(t *testing.T) {
 	if len(restricted) >= len(all) {
 		t.Errorf("FIPS context lists %d digests, default lists %d; expected fewer",
 			len(restricted), len(all))
+	}
+}
+
+// Whether a curve is usable is a property of the context, not of libcrypto.
+// The built-in curve table lists secp256k1 and the Brainpool curves because
+// the library was compiled with them, while the FIPS provider offers only the
+// NIST prime curves -- so a check that consults the table alone reports a
+// capability the operation then refuses.
+//
+// This sweeps both contexts and holds the structural verdict against the real
+// operation, which is the only way to catch that class of disagreement.
+func TestCurveSupportIsContextScoped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("curve trials skipped in short mode")
+	}
+	cfg := fipsConfig(t)
+	fips, err := NewFIPSContext(cfg)
+	if err != nil {
+		t.Fatalf("NewFIPSContext: %v", err)
+	}
+	defer fips.Close()
+
+	curves := []Curve{P224, P256, P384, P521, Secp256k1, BrainpoolP256r1, BrainpoolP512r1}
+	contexts := map[string]*Context{"default": Default, "fips": fips}
+
+	disagreed := false
+	for name, ctx := range contexts {
+		for _, curve := range curves {
+			cap := SignatureCapability{Key: EC, Curve: curve, Digest: SHA256}
+			structural := ctx.Supports(cap) == nil
+			actual := cap.trial(ctx) == nil
+			if structural != actual {
+				t.Errorf("%s context, %s: Supports said %v but the real operation said %v",
+					name, curve, structural, actual)
+			}
+			if name == "fips" && (Default.Supports(cap) == nil) != structural {
+				disagreed = true
+			}
+		}
+	}
+	// If the two contexts agreed on every curve the sweep proves nothing
+	// about scoping, only that the curves all happen to work.
+	if !disagreed {
+		t.Error("no curve was accepted by one context and refused by the other; " +
+			"this test is not exercising context scoping")
+	}
+}
+
+// The probe runs once per question per context and is not shared between
+// contexts, which is what makes it affordable to ask and correct to trust.
+func TestProbeIsMemoisedPerContext(t *testing.T) {
+	a, err := NewContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	runs := 0
+	count := func() error { runs++; return nil }
+
+	for i := 0; i < 3; i++ {
+		if err := a.probe("question", count); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs != 1 {
+		t.Errorf("probe ran %d times for one question in one context, want 1", runs)
+	}
+
+	// A second context must ask for itself: the answer depends on that
+	// context's providers and property query, not on the library.
+	if err := b.probe("question", count); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Errorf("probe ran %d times across two contexts, want 2", runs)
+	}
+
+	// A failure is remembered too, and reported verbatim rather than
+	// flattened to a boolean.
+	sentinel := errors.New("no")
+	for i := 0; i < 2; i++ {
+		if err := a.probe("failing", func() error { runs++; return sentinel }); !errors.Is(err, sentinel) {
+			t.Errorf("probe returned %v, want the underlying error", err)
+		}
+	}
+	if runs != 3 {
+		t.Errorf("a failing probe ran %d times, want 1", runs-2)
+	}
+}
+
+// Curve support must not be answered from a provider capability query.
+// OSSL_PROVIDER_get_capabilities("TLS-GROUP") is the only mechanism OpenSSL
+// offers and it describes TLS negotiation, not key generation: measured here,
+// an unrestricted context generates keys on far more curves than it declares
+// as groups. A future change that swapped the probe for that query would pass
+// the FIPS tests and quietly start refusing working curves, so this pins the
+// direction of the discrepancy.
+func TestCurveSupportExceedsTLSGroups(t *testing.T) {
+	if testing.Short() {
+		t.Skip("curve sweep skipped in short mode")
+	}
+	curves, err := ListCurves()
+	if err != nil {
+		t.Fatal(err)
+	}
+	usable := 0
+	for _, cv := range curves {
+		if Default.curveUsable(cv) == nil {
+			usable++
+		}
+	}
+	// The default provider declares 28 curve TLS groups on this build.
+	const tlsGroups = 28
+	if usable <= tlsGroups {
+		t.Errorf("only %d of %d built-in curves are usable, which no longer exceeds the %d "+
+			"declared TLS groups; re-check whether a capability query would now be sound",
+			usable, len(curves), tlsGroups)
 	}
 }
 

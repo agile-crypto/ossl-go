@@ -9,7 +9,10 @@ package ossl
 */
 import "C"
 
-import "unsafe"
+import (
+	"sync"
+	"unsafe"
+)
 
 // Context is an isolated OSSL_LIB_CTX: its own provider set, default
 // property query, and RNG/DRBG state, independent of every other Context and
@@ -28,6 +31,12 @@ type Context struct {
 	// it. Unloading it early would silently drop the context back to
 	// unvalidated implementations.
 	fips *Provider
+
+	// mu guards probes, the memo behind Context.probe. What a context can
+	// do is a property of its providers and property query rather than of
+	// the library, so these answers cannot be cached package-wide.
+	mu     sync.Mutex
+	probes map[string]error
 }
 
 // Default is the implicit global library context -- what a NULL libctx means
