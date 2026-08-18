@@ -131,4 +131,4 @@ less than it appears to.
 
 ## Licence
 
-See the repository for licence terms.
+Apache License 2.0. See [LICENSE](LICENSE).
