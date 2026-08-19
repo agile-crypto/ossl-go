@@ -38,7 +38,17 @@ jobs:
           cd "openssl-${OPENSSL_VERSION}"
           # enable-fips builds the validated module so the FIPS tests are not
           # skipped; without it they would silently reduce coverage.
-          ./Configure --prefix="${OPENSSL_PREFIX}" --openssldir="${OPENSSL_PREFIX}/ssl" enable-fips
+          #
+          # -Wl,-rpath,... is not optional here. Without it, "openssl" and
+          # libssl.so/libcrypto.so link against whatever "libssl.so.3" the
+          # dynamic linker finds first -- which on this runner is the older
+          # system package, not this build -- and every invocation of the
+          # freshly built openssl binary fails at load time with unresolved
+          # OPENSSL_3.x symbol versions. CGO_LDFLAGS gives the same rpath to
+          # the Go test binaries later in scripts/ci.sh; this is the other
+          # half, for the openssl CLI itself.
+          ./Configure --prefix="${OPENSSL_PREFIX}" --openssldir="${OPENSSL_PREFIX}/ssl" \
+            enable-fips "-Wl,-rpath,${OPENSSL_PREFIX}/lib64"
           make -j"$(nproc)"
           sudo make install_sw install_ssldirs install_fips
 
