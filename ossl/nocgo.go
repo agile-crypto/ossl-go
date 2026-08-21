@@ -533,6 +533,17 @@ func (a AEADCapability) check(*Context) error { return ErrUnavailable }
 func (a AEADCapability) trial(*Context) error { return ErrUnavailable }
 func (a AEADCapability) describe() string     { return string(a.Cipher) }
 
+type CipherCapability struct {
+	Cipher   CipherName
+	KeyBytes int
+	IVBytes  int
+	Padding  PaddingScheme
+}
+
+func (x CipherCapability) check(*Context) error { return ErrUnavailable }
+func (x CipherCapability) trial(*Context) error { return ErrUnavailable }
+func (x CipherCapability) describe() string     { return string(x.Cipher) }
+
 func (c *Context) ListDigests() ([]DigestName, error) { return nil, ErrUnavailable }
 func (c *Context) ListCiphers() ([]CipherName, error) { return nil, ErrUnavailable }
 func (c *Context) ListMACs() ([]MACName, error)       { return nil, ErrUnavailable }

@@ -8,6 +8,7 @@ package ossl
 import "C"
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"sync"
@@ -296,6 +297,90 @@ func (a AEADCapability) trial(c *Context) error {
 		return err
 	}
 	if string(got) != string(pt) {
+		return fmt.Errorf("round trip returned different plaintext")
+	}
+	return nil
+}
+
+// CipherCapability is a non-AEAD symmetric cipher configuration to check --
+// CBC, CTR, OFB, CFB, ECB: everything NewCipher covers that NewAEAD does not.
+//
+// Leave KeyBytes zero to use the cipher's own key length, same convention as
+// AEADCapability.KeyBytes. IVBytes zero means the cipher's default (0 for
+// ECB, which takes none). Padding is ignored by stream modes (CTR, OFB,
+// CFB), same as NewCipher itself -- only CBC's partial final block cares.
+type CipherCapability struct {
+	Cipher   CipherName
+	KeyBytes int
+	IVBytes  int
+	Padding  PaddingScheme
+}
+
+func (x CipherCapability) describe() string {
+	d := string(x.Cipher)
+	if x.IVBytes > 0 {
+		d += fmt.Sprintf(" (iv=%d)", x.IVBytes)
+	}
+	return d
+}
+
+func (x CipherCapability) keyLen(c *Context) int {
+	if x.KeyBytes > 0 {
+		return x.KeyBytes
+	}
+	if n, err := c.cipherKeyLength(x.Cipher); err == nil {
+		return n
+	}
+	return 32
+}
+
+func (x CipherCapability) check(c *Context) error {
+	if x.Cipher == "" {
+		return fmt.Errorf("ossl: CipherCapability needs a cipher")
+	}
+	if !c.CipherAvailable(x.Cipher, "") {
+		return fmt.Errorf("ossl: cipher %q is not available in this context", x.Cipher)
+	}
+	key := make([]byte, x.keyLen(c))
+	opts := []CipherOption{WithPadding(x.Padding)}
+	if x.IVBytes > 0 {
+		opts = append(opts, WithCipherIVSize(x.IVBytes))
+	}
+	cph, err := c.NewCipher(x.Cipher, key, opts...)
+	if err != nil {
+		return err
+	}
+	return cph.Close()
+}
+
+func (x CipherCapability) trial(c *Context) error {
+	key := make([]byte, x.keyLen(c))
+	opts := []CipherOption{WithPadding(x.Padding)}
+	if x.IVBytes > 0 {
+		opts = append(opts, WithCipherIVSize(x.IVBytes))
+	}
+	cph, err := c.NewCipher(x.Cipher, key, opts...)
+	if err != nil {
+		return err
+	}
+	defer cph.Close()
+
+	// One whole block (1 byte for a stream mode, where every length is a
+	// whole block). PaddingZero does not restore the original length for
+	// anything else -- that is inherent to the scheme, not a defect in it --
+	// so an unaligned probe would fail a configuration that works. Aligned,
+	// every scheme this package supports round-trips exactly.
+	iv := make([]byte, cph.IVSize())
+	pt := bytes.Repeat([]byte{0x2a}, cph.BlockSize())
+	ct, err := cph.Encrypt(nil, iv, pt)
+	if err != nil {
+		return err
+	}
+	got, err := cph.Decrypt(nil, iv, ct)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, pt) {
 		return fmt.Errorf("round trip returned different plaintext")
 	}
 	return nil

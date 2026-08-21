@@ -189,6 +189,37 @@ func TestAEADCapability(t *testing.T) {
 	}
 }
 
+func TestCipherCapability(t *testing.T) {
+	good := []CipherCapability{
+		{Cipher: AES128CBC},
+		{Cipher: AES256CBC},
+		{Cipher: AES128CBC, Padding: PaddingZero},
+		{Cipher: AES128CTR},
+		{Cipher: AES256CTR},
+	}
+	for _, c := range good {
+		if err := Default.Supports(c); err != nil {
+			t.Errorf("Supports rejected %s: %v", c.describe(), err)
+			continue
+		}
+		if err := Default.VerifyCapability(c); err != nil {
+			t.Errorf("VerifyCapability rejected %s: %v", c.describe(), err)
+		}
+	}
+
+	bad := []CipherCapability{
+		{},                               // no cipher
+		{Cipher: "NOPE"},                 // unknown
+		{Cipher: AES256GCM},              // AEAD, not NewCipher's business
+		{Cipher: AES128CBC, KeyBytes: 3}, // wrong key length
+	}
+	for _, c := range bad {
+		if err := Default.Supports(c); err == nil {
+			t.Errorf("Supports accepted %s", c.describe())
+		}
+	}
+}
+
 // A FIPS-restricted context must report a smaller capability set than an
 // unrestricted one. This is the property that makes the check Context-scoped
 // rather than a package-level function.
