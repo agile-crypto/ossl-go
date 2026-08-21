@@ -320,6 +320,19 @@ func (c *Context) digestIsXOF(name DigestName) (bool, error) {
 	return C.EVP_MD_xof(md) != 0, nil
 }
 
+// digestSize reports the digest's output size in bytes.
+func (c *Context) digestSize(name DigestName) (int, error) {
+	cname := C.CString(string(name))
+	defer C.free(unsafe.Pointer(cname))
+	md := C.EVP_MD_fetch(c.ptr(), cname, nil)
+	if md == nil {
+		clearErrors()
+		return 0, fmt.Errorf("ossl: digest %q is not available in this context", name)
+	}
+	defer C.EVP_MD_free(md)
+	return int(C.EVP_MD_get_size(md)), nil
+}
+
 // cipherKeyLength reports the cipher's key size in bytes.
 func (c *Context) cipherKeyLength(name CipherName) (int, error) {
 	cname := C.CString(string(name))

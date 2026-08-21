@@ -52,6 +52,8 @@ func TestAbuseNilReceivers(t *testing.T) {
 		"nilKey.Public":         func() { _, _ = nilKey.Public() },
 		"nilKey.Sign":           func() { _, _ = nilKey.Sign([]byte("m"), nil) },
 		"nilKey.Verify":         func() { _ = nilKey.Verify([]byte("m"), []byte("s"), nil) },
+		"nilKey.SignDigest":     func() { _, _ = nilKey.SignDigest([]byte("d"), nil) },
+		"nilKey.VerifyDigest":   func() { _ = nilKey.VerifyDigest([]byte("d"), []byte("s"), nil) },
 		"nilKey.Encrypt":        func() { _, _ = nilKey.Encrypt([]byte("m"), nil) },
 		"nilKey.Decrypt":        func() { _, _ = nilKey.Decrypt([]byte("c"), nil) },
 		"nilKey.MaxOAEP":        func() { _, _ = nilKey.MaxOAEPPlaintext(nil) },

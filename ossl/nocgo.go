@@ -271,6 +271,11 @@ type SignOptions struct {
 func (k *Key) Sign(msg []byte, opts *SignOptions) ([]byte, error) { return nil, ErrUnavailable }
 func (k *Key) Verify(msg, sig []byte, opts *SignOptions) error    { return ErrUnavailable }
 
+func (k *Key) SignDigest(digest []byte, opts *SignOptions) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+func (k *Key) VerifyDigest(digest, sig []byte, opts *SignOptions) error { return ErrUnavailable }
+
 type Signer struct{}
 type Verifier struct{}
 
